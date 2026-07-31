@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ime_label">Mini Qwerty Keyboard</string>
+    <string name="ime_subtype_en">English (US)</string>
+    <string name="ime_subtype_vi">Vietnamese (Telex)</string>
+</resources>
