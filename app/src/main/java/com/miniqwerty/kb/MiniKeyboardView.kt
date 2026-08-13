@@ -269,9 +269,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         ),
         // Row 3 — control row, "," below "." on the right of the space
         listOf(
-            KeyDef("ABC", null, widthUnits = 2f, keyType = KeyType.ABC),
-            KeyDef(" ", null, widthUnits = 3f, keyType = KeyType.SPACE),
+            KeyDef("ABC", null, widthUnits = 1f, keyType = KeyType.ABC),
+            KeyDef(" ", null, widthUnits = 4f, keyType = KeyType.SPACE),
             KeyDef(".", ","),
+            KeyDef("⏎", null, widthUnits = 1f, keyType = KeyType.RETURN),
         ),
     )
 
