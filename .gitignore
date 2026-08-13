@@ -20,3 +20,4 @@ gradle/wrapper/gradle-wrapper.jar
 # Misc
 *.log
 .DS_Store
+tools/__pycache__/

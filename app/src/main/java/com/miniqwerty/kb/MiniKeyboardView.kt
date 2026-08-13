@@ -197,32 +197,35 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Layout definitions
     // ─────────────────────────────────────────────────────────────────────
 
-    // Letters layer. Row 1 is 10 columns so both R and the Telex tone key F
-    // keep a top slot.
+    // Letters layer. Layout chosen by tools/layout_analyzer.py against a
+    // Vietnamese word-frequency corpus: tone keys and common letters on
+    // single-tap slots, rarest letters as double-tap secondaries. A, E, O, D
+    // sit on keys without secondaries so the Telex same-key digraphs
+    // aa/ee/oo/dd stay typeable via quick double-press.
     private val letterKeys: List<List<KeyDef>> = listOf(
         // Row 1 — "," at the right end, "." below it
         listOf(
-            KeyDef("W", "Q"),
-            KeyDef("E", null, isVowel = true),
-            KeyDef("R", null),
-            KeyDef("F", null),
-            KeyDef("T", "G"),
-            KeyDef("Y", "P"),
-            KeyDef("U", null, isVowel = true),
+            KeyDef("X", "Z"),
+            KeyDef("F", "P"),
+            KeyDef("C", null),
+            KeyDef("S", "V"),
+            KeyDef("W", "Y"),
+            KeyDef("A", null, isVowel = true),
             KeyDef("I", null, isVowel = true),
-            KeyDef("O", null, isVowel = true),
+            KeyDef("U", "K", isVowel = true),
+            KeyDef("J", null),
             KeyDef(",", "."),
         ),
         // Row 2 — backspace at the end
         listOf(
-            KeyDef("A", null, isVowel = true),
-            KeyDef("S", "Z"),
-            KeyDef("X", "D"),
-            KeyDef("C", "V"),
-            KeyDef("H", "B"),
-            KeyDef("J", "N"),
-            KeyDef("M", "K"),
-            KeyDef("L", "?"),
+            KeyDef("R", "Q"),
+            KeyDef("D", null),
+            KeyDef("T", "B"),
+            KeyDef("H", "M"),
+            KeyDef("N", "L"),
+            KeyDef("O", null, isVowel = true),
+            KeyDef("E", null, isVowel = true),
+            KeyDef("G", null),
             KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
         // Row 3 — control row with variable-width spans
