@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.*
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -15,6 +16,10 @@ import kotlin.math.min
  */
 interface OnKeyActionListener {
     fun onCharacter(char: Char)
+    /** Replace the last raw character in the composing buffer (double-tap). */
+    fun onReplaceCharacter(char: Char)
+    /** Commit a character directly, bypassing the Telex buffer (numeric layer). */
+    fun onDirectCharacter(char: Char)
     fun onBackspace()
     fun onShift()
     fun onNumeric()
@@ -27,8 +32,11 @@ interface OnKeyActionListener {
 // ─────────────────────────────────────────────────────────────────────────────
 
 private enum class KeyType {
-    CHARACTER, BACKSPACE, SHIFT, NUMERIC, SPACE, RETURN
+    CHARACTER, BACKSPACE, SHIFT, NUMERIC, ABC, SYMBOLS, SPACE, RETURN
 }
+
+/** Which keyboard layer is currently displayed. */
+private enum class KeyboardLayer { LETTERS, NUMERIC }
 
 private data class KeyDef(
     val primary: String,
@@ -36,6 +44,8 @@ private data class KeyDef(
     val isVowel: Boolean = false,
     val widthUnits: Float = 1f,
     val keyType: KeyType = KeyType.CHARACTER,
+    /** Explicit display label for function keys. */
+    val label: String? = null,
 ) {
     /** Pixel bounds set during layout. */
     var left: Float = 0f
@@ -66,6 +76,9 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var keyHeight: Float = 0f
     private var colWidth: Float = 0f
 
+    // ── Layer state ───────────────────────────────────────────────────────
+    private var currentLayer: KeyboardLayer = KeyboardLayer.LETTERS
+
     // ── Touch-tracking state ──────────────────────────────────────────────
     private var downKey: KeyDef? = null
     private var downX: Float = 0f
@@ -76,6 +89,15 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     private val longPressHandler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
+
+    // Double-tap state: second quick tap on the same key emits its secondary.
+    private var lastTapKey: KeyDef? = null
+    private var lastTapTime: Long = 0L
+
+    // Backspace repeat state.
+    private val repeatHandler = Handler(Looper.getMainLooper())
+    private var backspaceRepeatRunnable: Runnable? = null
+    private var backspaceRepeatActive: Boolean = false
 
     // ── Paints ────────────────────────────────────────────────────────────
     private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -115,14 +137,18 @@ class MiniKeyboardView(context: Context) : View(context) {
     private val cornerRadius = 6f
 
     // ─────────────────────────────────────────────────────────────────────
-    // Layout definition  (9 columns × 3 rows)
+    // Layout definitions
     // ─────────────────────────────────────────────────────────────────────
-    private val keys: List<List<KeyDef>> = listOf(
-        // Row 1
+
+    // Letters layer — 9 columns × 3 rows.
+    // F, X, J are the Telex tone keys, so they sit on the primary (top) slot.
+    private val letterKeys: List<List<KeyDef>> = listOf(
+        // Row 1 — 10 columns so both R and the Telex tone key F get a top slot
         listOf(
             KeyDef("W", "Q"),
             KeyDef("E", null, isVowel = true),
-            KeyDef("R", "F"),
+            KeyDef("R", null),
+            KeyDef("F", null),
             KeyDef("T", "G"),
             KeyDef("Y", "P"),
             KeyDef("U", ",", isVowel = true),
@@ -134,10 +160,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         listOf(
             KeyDef("A", null, isVowel = true),
             KeyDef("S", "Z"),
-            KeyDef("D", "X"),
+            KeyDef("X", "D"),
             KeyDef("C", "V"),
             KeyDef("H", "B"),
-            KeyDef("N", "J"),
+            KeyDef("J", "N"),
             KeyDef("M", "K"),
             KeyDef("L", "?"),
             KeyDef("!", "."),
@@ -145,11 +171,52 @@ class MiniKeyboardView(context: Context) : View(context) {
         // Row 3 — control row with variable-width spans
         listOf(
             KeyDef("⇧", null, widthUnits = 1.5f, keyType = KeyType.SHIFT),
-            KeyDef("123", null, widthUnits = 1.5f, keyType = KeyType.NUMERIC),
+            KeyDef("123", null, widthUnits = 1f, keyType = KeyType.NUMERIC),
             KeyDef(" ", null, widthUnits = 5f, keyType = KeyType.SPACE),
-            KeyDef("⏎", null, keyType = KeyType.RETURN),
+            KeyDef("⏎", null, widthUnits = 1.5f, keyType = KeyType.RETURN),
         ),
     )
+
+    // Numeric layer. Row 2 is denser (10 columns) to fit the full symbol set.
+    private val numericKeys: List<List<KeyDef>> = listOf(
+        // Row 1 — digits
+        listOf(
+            KeyDef("1", null),
+            KeyDef("2", null),
+            KeyDef("3", null),
+            KeyDef("4", null),
+            KeyDef("5", null),
+            KeyDef("6", null),
+            KeyDef("7", null),
+            KeyDef("8", null),
+            KeyDef("9", null),
+        ),
+        // Row 2 — symbols
+        listOf(
+            KeyDef("0", null),
+            KeyDef("-", null),
+            KeyDef("/", null),
+            KeyDef(":", null),
+            KeyDef(";", null),
+            KeyDef("(", null),
+            KeyDef(")", null),
+            KeyDef("$", null),
+            KeyDef("&", null),
+            KeyDef("@", null),
+        ),
+        // Row 3 — control row with variable-width spans
+        listOf(
+            KeyDef("#+=", null, widthUnits = 2f, keyType = KeyType.SYMBOLS),
+            KeyDef(",", null),
+            KeyDef(".", null),
+            KeyDef(" ", null, widthUnits = 2f, keyType = KeyType.SPACE),
+            KeyDef("ABC", null, widthUnits = 2f, keyType = KeyType.ABC),
+            KeyDef("⌫", null, widthUnits = 2f, keyType = KeyType.BACKSPACE),
+        ),
+    )
+
+    private val keys: List<List<KeyDef>>
+        get() = if (currentLayer == KeyboardLayer.LETTERS) letterKeys else numericKeys
 
     // ─────────────────────────────────────────────────────────────────────
     // Measurement & Layout
@@ -183,7 +250,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         primaryTextPaint.textSize = keyHeight * 0.32f
         vowelTextPaint.textSize = keyHeight * 0.32f
         secondaryTextPaint.textSize = keyHeight * 0.20f
-        functionTextPaint.textSize = keyHeight * 0.28f
+        functionTextPaint.textSize = keyHeight * 0.24f
 
         layoutKeys()
     }
@@ -207,6 +274,16 @@ class MiniKeyboardView(context: Context) : View(context) {
                 x += w
             }
         }
+    }
+
+    /** Switch the displayed layer and re-layout. */
+    private fun setLayer(layer: KeyboardLayer) {
+        if (currentLayer == layer) return
+        currentLayer = layer
+        if (layer == KeyboardLayer.NUMERIC) shiftActive = false
+        lastTapKey = null
+        layoutKeys()
+        invalidate()
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -270,10 +347,12 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     private fun drawFunctionKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
-        val text = when (key.keyType) {
-            KeyType.SHIFT     -> if (shiftActive) "⇧" else "⇧"  // same icon, active state via bg
+        val text = key.label ?: when (key.keyType) {
+            KeyType.SHIFT     -> "⇧"
             KeyType.BACKSPACE -> "⌫"
             KeyType.NUMERIC   -> "123"
+            KeyType.ABC       -> "ABC"
+            KeyType.SYMBOLS   -> "#+="
             KeyType.SPACE     -> ""
             KeyType.RETURN    -> "⏎"
             else              -> key.primary
@@ -326,16 +405,22 @@ class MiniKeyboardView(context: Context) : View(context) {
                 isSwipeDetected = false
                 longPressTriggered = false
 
-                longPressRunnable = Runnable {
-                    if (downKey != null && !isSwipeDetected && !longPressTriggered) {
-                        longPressTriggered = true
-                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
-                        commitSecondary(downKey!!)
-                        downKey = null
-                        invalidate()
+                if (downKey?.keyType == KeyType.BACKSPACE) {
+                    // Hold-to-repeat instead of long-press secondary.
+                    scheduleBackspaceRepeat()
+                } else {
+                    longPressRunnable = Runnable {
+                        if (downKey != null && !isSwipeDetected && !longPressTriggered) {
+                            longPressTriggered = true
+                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            lastTapKey = null
+                            commitSecondary(downKey!!, replace = false)
+                            downKey = null
+                            invalidate()
+                        }
                     }
+                    longPressHandler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
                 }
-                longPressHandler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
                 invalidate()
                 return true
             }
@@ -355,18 +440,26 @@ class MiniKeyboardView(context: Context) : View(context) {
 
             MotionEvent.ACTION_UP -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
 
-                if (downKey != null && !longPressTriggered) {
-                    if (isSwipeDetected) {
+                val key = downKey
+                if (key != null && !longPressTriggered) {
+                    if (key.keyType == KeyType.BACKSPACE) {
+                        // Released before the repeat kicked in → single delete.
+                        if (!backspaceRepeatActive) {
+                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            onKeyActionListener?.onBackspace()
+                        }
+                    } else if (isSwipeDetected) {
                         performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
-                        commitSecondary(downKey!!)
+                        lastTapKey = null
+                        commitSecondary(key, replace = false)
                     } else {
-                        // Quick tap → primary
-                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
-                        commitPrimary(downKey!!)
+                        handleQuickTap(key)
                     }
                 }
 
+                backspaceRepeatActive = false
                 downKey = null
                 invalidate()
                 return true
@@ -374,12 +467,55 @@ class MiniKeyboardView(context: Context) : View(context) {
 
             MotionEvent.ACTION_CANCEL -> {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
+                backspaceRepeatActive = false
                 downKey = null
                 invalidate()
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    /**
+     * Quick tap. First tap emits the top (primary) character; a second tap on
+     * the same key within [DOUBLE_TAP_MS] replaces it with the bottom
+     * (secondary) character. Only letter secondaries take part — punctuation
+     * secondaries stay on long-press/swipe so Telex transforms like oo→ô
+     * keep working under fast typing.
+     */
+    private fun handleQuickTap(key: KeyDef) {
+        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+
+        val now = SystemClock.uptimeMillis()
+        val secondary = key.secondary
+        val isDoubleTap = currentLayer == KeyboardLayer.LETTERS &&
+            secondary != null && secondary.first().isLetter() &&
+            key === lastTapKey && now - lastTapTime <= DOUBLE_TAP_MS
+
+        if (isDoubleTap) {
+            commitSecondary(key, replace = true)
+            lastTapKey = null
+        } else {
+            commitPrimary(key)
+            lastTapKey = key
+            lastTapTime = now
+        }
+    }
+
+    /** Repeatedly fire [OnKeyActionListener.onBackspace] while held down. */
+    private fun scheduleBackspaceRepeat() {
+        backspaceRepeatActive = false
+        val runnable = object : Runnable {
+            override fun run() {
+                if (downKey?.keyType != KeyType.BACKSPACE) return
+                backspaceRepeatActive = true
+                onKeyActionListener?.onBackspace()
+                repeatHandler.postDelayed(this, BACKSPACE_REPEAT_MS)
+            }
+        }
+        backspaceRepeatRunnable = runnable
+        repeatHandler.postDelayed(runnable, BACKSPACE_INITIAL_DELAY_MS)
     }
 
     // ── Key lookup ────────────────────────────────────────────────────────
@@ -412,20 +548,30 @@ class MiniKeyboardView(context: Context) : View(context) {
                 }
                 // Auto-release shift after one character
                 if (shiftActive) shiftActive = false
-                listener.onCharacter(ch)
+
+                if (currentLayer == KeyboardLayer.NUMERIC) {
+                    // Numbers and symbols commit directly, no Telex processing.
+                    listener.onDirectCharacter(ch)
+                } else {
+                    listener.onCharacter(ch)
+                }
             }
             KeyType.BACKSPACE -> listener.onBackspace()
             KeyType.SHIFT     -> {
                 shiftActive = !shiftActive
                 listener.onShift()
             }
-            KeyType.NUMERIC   -> listener.onNumeric()
+            KeyType.NUMERIC   -> setLayer(KeyboardLayer.NUMERIC)
+            KeyType.ABC       -> setLayer(KeyboardLayer.LETTERS)
+            KeyType.SYMBOLS   -> {
+                // No extended symbol layer yet — dead key.
+            }
             KeyType.SPACE     -> listener.onSpace()
             KeyType.RETURN    -> listener.onReturn()
         }
     }
 
-    private fun commitSecondary(key: KeyDef) {
+    private fun commitSecondary(key: KeyDef, replace: Boolean) {
         val listener = onKeyActionListener ?: return
         if (key.secondary != null) {
             val ch = if (shiftActive) {
@@ -434,7 +580,11 @@ class MiniKeyboardView(context: Context) : View(context) {
                 key.secondary[0].lowercaseChar()
             }
             if (shiftActive) shiftActive = false
-            listener.onCharacter(ch)
+            if (replace) {
+                listener.onReplaceCharacter(ch)
+            } else {
+                listener.onCharacter(ch)
+            }
         } else {
             // Fallback: if no secondary defined, treat as primary
             commitPrimary(key)
@@ -443,6 +593,9 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     companion object {
         private const val LONG_PRESS_MS = 350L
+        private const val DOUBLE_TAP_MS = 250L
+        private const val BACKSPACE_INITIAL_DELAY_MS = 400L
+        private const val BACKSPACE_REPEAT_MS = 60L
         private const val HAPTIC_FEEDBACK_ENABLED = 1 // matches HapticFeedbackConstants
         private const val KEY_ROW_HEIGHT_DP = 46f
     }

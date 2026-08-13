@@ -91,6 +91,24 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         updateComposingText()
     }
 
+    override fun onReplaceCharacter(char: Char) {
+        // Double-tap: swap the last raw character for the key's secondary
+        // before re-resolving the buffer.
+        if (rawBuffer.isNotEmpty()) {
+            rawBuffer.deleteCharAt(rawBuffer.lastIndex)
+        }
+        onCharacter(char)
+    }
+
+    override fun onDirectCharacter(char: Char) {
+        // Numeric layer: commit the pending word, then insert the character
+        // without passing it through the Telex buffer.
+        val ic = currentInputConnection ?: return
+        commitPending()
+        rawBuffer.clear()
+        ic.commitText(char.toString(), 1)
+    }
+
     override fun onBackspace() {
         val ic = currentInputConnection ?: return
 
@@ -110,7 +128,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     }
 
     override fun onNumeric() {
-        // Stub: switching to a numeric/symbol layer is not implemented in v1.
+        // Layer switching is handled by MiniKeyboardView; nothing to do here.
     }
 
     override fun onSpace() {
