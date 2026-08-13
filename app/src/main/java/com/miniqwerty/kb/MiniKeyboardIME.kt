@@ -55,6 +55,10 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         updateComposingText()
     }
 
+    // Never enter fullscreen IME mode in landscape — keep the compact
+    // keyboard anchored to the bottom of the screen.
+    override fun onEvaluateFullscreenMode(): Boolean = false
+
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         commitPending()

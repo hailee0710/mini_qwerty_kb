@@ -155,6 +155,20 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Measurement & Layout
     // ─────────────────────────────────────────────────────────────────────
 
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        // Fixed compact height (3 rows). Without this, the default View
+        // measurement returns the full AT_MOST spec size, making the IME
+        // fill the entire screen.
+        val width = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+            resources.displayMetrics.widthPixels
+        } else {
+            MeasureSpec.getSize(widthMeasureSpec)
+        }
+        val density = resources.displayMetrics.density
+        val height = (KEY_ROW_HEIGHT_DP * keys.size * density).toInt()
+        setMeasuredDimension(width, height)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         viewWidth = w
@@ -430,5 +444,6 @@ class MiniKeyboardView(context: Context) : View(context) {
     companion object {
         private const val LONG_PRESS_MS = 350L
         private const val HAPTIC_FEEDBACK_ENABLED = 1 // matches HapticFeedbackConstants
+        private const val KEY_ROW_HEIGHT_DP = 46f
     }
 }
