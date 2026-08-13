@@ -48,6 +48,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         editorInfo = info
+        // Re-apply user theme/height preferences (may have changed in settings).
+        keyboardView.refreshTheme()
         // Reset composing state when switching input targets
         commitPending()
         rawBuffer.clear()
@@ -68,6 +70,14 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     override fun onStartInput(info: EditorInfo, restarting: Boolean) {
         super.onStartInput(info, restarting)
         editorInfo = info
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Re-apply the dark/light palette when the system theme changes.
+        if (::keyboardView.isInitialized) {
+            keyboardView.refreshTheme()
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────

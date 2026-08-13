@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">Mini Keyboard</string>
     <string name="ime_label">Mini Qwerty Keyboard</string>
     <string name="ime_subtype_en">English (US)</string>
     <string name="ime_subtype_vi">Vietnamese (Telex)</string>
+
+    <string name="theme_title">Theme</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="height_title">Keyboard height</string>
+    <string name="height_value">%1$d dp</string>
+    <string name="height_hint">You can also drag the handle at the top of the keyboard to resize it.</string>
+    <string name="enable_button">Enable keyboard</string>
 </resources>

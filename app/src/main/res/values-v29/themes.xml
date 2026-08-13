@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DayNight variant exists from API 29 — follows system dark mode. -->
+    <style name="SettingsTheme" parent="android:Theme.DeviceDefault.DayNight" />
+</resources>

@@ -1,6 +1,7 @@
 package com.miniqwerty.kb
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.*
 import android.os.Handler
 import android.os.Looper
@@ -32,7 +33,7 @@ interface OnKeyActionListener {
 // ─────────────────────────────────────────────────────────────────────────────
 
 private enum class KeyType {
-    CHARACTER, BACKSPACE, SHIFT, NUMERIC, ABC, SYMBOLS, SPACE, RETURN
+    CHARACTER, BACKSPACE, SHIFT, NUMERIC, ABC, SPACE, RETURN
 }
 
 /** Which keyboard layer is currently displayed. */
@@ -44,8 +45,6 @@ private data class KeyDef(
     val isVowel: Boolean = false,
     val widthUnits: Float = 1f,
     val keyType: KeyType = KeyType.CHARACTER,
-    /** Explicit display label for function keys. */
-    val label: String? = null,
 ) {
     /** Pixel bounds set during layout. */
     var left: Float = 0f
@@ -69,12 +68,27 @@ class MiniKeyboardView(context: Context) : View(context) {
             invalidate()
         }
 
+    // ── Persisted preferences ────────────────────────────────────────────
+    private val prefs = context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+
+    // ── Theme state ───────────────────────────────────────────────────────
+    private var darkTheme: Boolean = resolveDarkTheme()
+
     // ── Dimensions (set during onSizeChanged) ─────────────────────────────
     private var viewWidth: Int = 0
     private var viewHeight: Int = 0
     private var keyWidth: Float = 0f
     private var keyHeight: Float = 0f
-    private var colWidth: Float = 0f
+    private var handleHeightPx: Float = 0f
+
+    // ── Keyboard height (drag-adjustable, persisted) ──────────────────────
+    private var rowHeightDp: Float =
+        prefs.getFloat(Prefs.KEY_ROW_HEIGHT_DP, Prefs.ROW_HEIGHT_DEFAULT_DP)
+            .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
+
+    private var dragActive: Boolean = false
+    private var dragStartY: Float = 0f
+    private var dragStartRowDp: Float = 0f
 
     // ── Layer state ───────────────────────────────────────────────────────
     private var currentLayer: KeyboardLayer = KeyboardLayer.LETTERS
@@ -100,50 +114,93 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var backspaceRepeatActive: Boolean = false
 
     // ── Paints ────────────────────────────────────────────────────────────
-    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFE0E0E0.toInt()
-        style = Paint.Style.FILL
-    }
-    private val keyBgPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFBDBDBD.toInt()
-        style = Paint.Style.FILL
-    }
+    private val bgPaint = Paint().apply { style = Paint.Style.FILL }
+    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val keyBgPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val keyBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFB0B0B0.toInt()
         style = Paint.Style.STROKE
         strokeWidth = 1f
     }
     private val primaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF212121.toInt()
         textAlign = Paint.Align.CENTER
-        isFakeBoldText = false
     }
     private val vowelTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFF6D00.toInt() // orange accent
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
     private val secondaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF9E9E9E.toInt()
         textAlign = Paint.Align.CENTER
     }
     private val functionTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF616161.toInt()
         textAlign = Paint.Align.CENTER
-        isFakeBoldText = false
     }
+    private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     // ── Corner radius ─────────────────────────────────────────────────────
     private val cornerRadius = 6f
+
+    init {
+        applyTheme()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Theme
+    // ─────────────────────────────────────────────────────────────────────
+
+    private fun isSystemDark(c: Context): Boolean =
+        (c.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+    /** Resolve dark/light from the saved theme preference (system by default). */
+    private fun resolveDarkTheme(): Boolean =
+        when (prefs.getInt(Prefs.KEY_THEME_MODE, Prefs.THEME_SYSTEM)) {
+            Prefs.THEME_LIGHT -> false
+            Prefs.THEME_DARK  -> true
+            else              -> isSystemDark(context)
+        }
+
+    /** Re-read the theme preference and recolor. Called on init, when the keyboard
+     *  window is shown, and on configuration change. */
+    fun refreshTheme() {
+        val dark = resolveDarkTheme()
+        if (darkTheme == dark) return
+        darkTheme = dark
+        applyTheme()
+        invalidate()
+    }
+
+    private fun applyTheme() {
+        if (darkTheme) {
+            bgPaint.color = 0xFF17181C.toInt()
+            keyBgPaint.color = 0xFF3C4043.toInt()
+            keyBgPressedPaint.color = 0xFF50545B.toInt()
+            keyBorderPaint.color = 0xFF0F1012.toInt()
+            primaryTextPaint.color = 0xFFE8EAED.toInt()
+            vowelTextPaint.color = 0xFFFF8A50.toInt() // orange accent
+            secondaryTextPaint.color = 0xFF9AA0A6.toInt()
+            functionTextPaint.color = 0xFFBDC1C6.toInt()
+            handlePaint.color = 0x66E8EAED.toInt()
+        } else {
+            bgPaint.color = 0xFFC7CBD2.toInt()
+            keyBgPaint.color = 0xFFE0E0E0.toInt()
+            keyBgPressedPaint.color = 0xFFBDBDBD.toInt()
+            keyBorderPaint.color = 0xFFB0B0B0.toInt()
+            primaryTextPaint.color = 0xFF212121.toInt()
+            vowelTextPaint.color = 0xFFFF6D00.toInt() // orange accent
+            secondaryTextPaint.color = 0xFF9E9E9E.toInt()
+            functionTextPaint.color = 0xFF616161.toInt()
+            handlePaint.color = 0x66808080.toInt()
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // Layout definitions
     // ─────────────────────────────────────────────────────────────────────
 
-    // Letters layer — 9 columns × 3 rows.
-    // F, X, J are the Telex tone keys, so they sit on the primary (top) slot.
+    // Letters layer. Row 1 is 10 columns so both R and the Telex tone key F
+    // keep a top slot.
     private val letterKeys: List<List<KeyDef>> = listOf(
-        // Row 1 — 10 columns so both R and the Telex tone key F get a top slot
+        // Row 1
         listOf(
             KeyDef("W", "Q"),
             KeyDef("E", null, isVowel = true),
@@ -151,12 +208,12 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("F", null),
             KeyDef("T", "G"),
             KeyDef("Y", "P"),
-            KeyDef("U", ",", isVowel = true),
+            KeyDef("U", null, isVowel = true),
             KeyDef("I", null, isVowel = true),
-            KeyDef("O", ".", isVowel = true),
+            KeyDef("O", null, isVowel = true),
             KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
-        // Row 2
+        // Row 2 — "," is the last key, "." below it
         listOf(
             KeyDef("A", null, isVowel = true),
             KeyDef("S", "Z"),
@@ -166,7 +223,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("J", "N"),
             KeyDef("M", "K"),
             KeyDef("L", "?"),
-            KeyDef("!", "."),
+            KeyDef(",", "."),
         ),
         // Row 3 — control row with variable-width spans
         listOf(
@@ -177,9 +234,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         ),
     )
 
-    // Numeric layer. Row 2 is denser (10 columns) to fit the full symbol set.
+    // Numeric layer. Rows 1–2 are 11 columns so the shift-symbols row
+    // `~!@#$%^&*()_` sits directly under `1234567890-`.
     private val numericKeys: List<List<KeyDef>> = listOf(
-        // Row 1 — digits
+        // Row 1 — digits plus trailing dash
         listOf(
             KeyDef("1", null),
             KeyDef("2", null),
@@ -190,27 +248,30 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("7", null),
             KeyDef("8", null),
             KeyDef("9", null),
-        ),
-        // Row 2 — symbols
-        listOf(
             KeyDef("0", null),
             KeyDef("-", null),
-            KeyDef("/", null),
-            KeyDef(":", null),
-            KeyDef(";", null),
+        ),
+        // Row 2 — shifted symbols
+        listOf(
+            KeyDef("~", null),
+            KeyDef("!", null),
+            KeyDef("@", null),
+            KeyDef("#", null),
+            KeyDef("$", null),
+            KeyDef("%", null),
+            KeyDef("^", null),
+            KeyDef("&", null),
+            KeyDef("*", null),
             KeyDef("(", null),
             KeyDef(")", null),
-            KeyDef("$", null),
-            KeyDef("&", null),
-            KeyDef("@", null),
+            KeyDef("_", null),
         ),
         // Row 3 — control row with variable-width spans
         listOf(
-            KeyDef("#+=", null, widthUnits = 2f, keyType = KeyType.SYMBOLS),
+            KeyDef("ABC", null, widthUnits = 2f, keyType = KeyType.ABC),
             KeyDef(",", null),
             KeyDef(".", null),
-            KeyDef(" ", null, widthUnits = 2f, keyType = KeyType.SPACE),
-            KeyDef("ABC", null, widthUnits = 2f, keyType = KeyType.ABC),
+            KeyDef(" ", null, widthUnits = 3f, keyType = KeyType.SPACE),
             KeyDef("⌫", null, widthUnits = 2f, keyType = KeyType.BACKSPACE),
         ),
     )
@@ -223,16 +284,13 @@ class MiniKeyboardView(context: Context) : View(context) {
     // ─────────────────────────────────────────────────────────────────────
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        // Fixed compact height (3 rows). Without this, the default View
-        // measurement returns the full AT_MOST spec size, making the IME
-        // fill the entire screen.
         val width = if (MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.UNSPECIFIED) {
             resources.displayMetrics.widthPixels
         } else {
             MeasureSpec.getSize(widthMeasureSpec)
         }
         val density = resources.displayMetrics.density
-        val height = (KEY_ROW_HEIGHT_DP * keys.size * density).toInt()
+        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * keys.size) * density).toInt()
         setMeasuredDimension(width, height)
     }
 
@@ -241,10 +299,11 @@ class MiniKeyboardView(context: Context) : View(context) {
         viewWidth = w
         viewHeight = h
 
+        val density = resources.displayMetrics.density
+        handleHeightPx = HANDLE_HEIGHT_DP * density
         val rows = keys.size
-        keyHeight = h.toFloat() / rows
-        colWidth = w.toFloat() / 9f // base column width
-        keyWidth = colWidth   // default 1-unit key width
+        keyHeight = (h - handleHeightPx) / rows
+        keyWidth = w.toFloat() / rows  // rough default for hit padding
 
         // Size text paints proportionally
         primaryTextPaint.textSize = keyHeight * 0.32f
@@ -258,7 +317,7 @@ class MiniKeyboardView(context: Context) : View(context) {
     /** Assign pixel bounds to every key based on column spans. */
     private fun layoutKeys() {
         for ((rowIdx, row) in keys.withIndex()) {
-            val y = rowIdx * keyHeight
+            val y = handleHeightPx + rowIdx * keyHeight
             var x = 0f
 
             // Compute total width-units for this row
@@ -293,11 +352,26 @@ class MiniKeyboardView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
+        // Opaque background so the IME window is not transparent.
+        canvas.drawRect(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat(), bgPaint)
+
         for (row in keys) {
             for (key in row) {
                 drawKey(canvas, key, key == downKey)
             }
         }
+
+        // Drag handle pill at the top center
+        val density = resources.displayMetrics.density
+        val pillW = HANDLE_PILL_WIDTH_DP * density
+        val pillH = HANDLE_PILL_HEIGHT_DP * density
+        val pillL = (viewWidth - pillW) / 2f
+        val pillT = (handleHeightPx - pillH) / 2f
+        canvas.drawRoundRect(
+            RectF(pillL, pillT, pillL + pillW, pillT + pillH),
+            pillH / 2f, pillH / 2f,
+            handlePaint
+        )
     }
 
     private fun drawKey(canvas: Canvas, key: KeyDef, pressed: Boolean) {
@@ -326,11 +400,12 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     private fun drawCharacterKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
         val primaryPaint = if (key.isVowel) vowelTextPaint else primaryTextPaint
+        val kw = key.right - key.left
 
         // Primary (top-left quadrant)
         canvas.drawText(
             resolveCase(key.primary),
-            cx - keyWidth * 0.22f,
+            cx - kw * 0.22f,
             cy - keyHeight * 0.12f,
             primaryPaint
         )
@@ -339,7 +414,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         if (key.secondary != null) {
             canvas.drawText(
                 resolveCase(key.secondary),
-                cx + keyWidth * 0.22f,
+                cx + kw * 0.22f,
                 cy + keyHeight * 0.22f,
                 secondaryTextPaint
             )
@@ -347,12 +422,11 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     private fun drawFunctionKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
-        val text = key.label ?: when (key.keyType) {
+        val text = when (key.keyType) {
             KeyType.SHIFT     -> "⇧"
             KeyType.BACKSPACE -> "⌫"
             KeyType.NUMERIC   -> "123"
             KeyType.ABC       -> "ABC"
-            KeyType.SYMBOLS   -> "#+="
             KeyType.SPACE     -> ""
             KeyType.RETURN    -> "⏎"
             else              -> key.primary
@@ -399,6 +473,15 @@ class MiniKeyboardView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (event.y < handleHeightPx) {
+                    // Drag the handle strip to resize the keyboard.
+                    dragActive = true
+                    dragStartY = event.y
+                    dragStartRowDp = rowHeightDp
+                    invalidate()
+                    return true
+                }
+
                 downKey = findKeyAt(event.x, event.y)
                 downX = event.x
                 downY = event.y
@@ -426,6 +509,15 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_MOVE -> {
+                if (dragActive) {
+                    val density = resources.displayMetrics.density
+                    val rowDelta = (event.y - dragStartY) / density / keys.size
+                    rowHeightDp = (dragStartRowDp + rowDelta)
+                        .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
+                    requestLayout()
+                    return true
+                }
+
                 if (downKey == null || longPressTriggered) return true
 
                 val dy = event.y - downY
@@ -439,6 +531,13 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_UP -> {
+                if (dragActive) {
+                    dragActive = false
+                    prefs.edit().putFloat(Prefs.KEY_ROW_HEIGHT_DP, rowHeightDp).apply()
+                    invalidate()
+                    return true
+                }
+
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
 
@@ -466,6 +565,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                dragActive = false
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
                 backspaceRepeatActive = false
@@ -480,17 +580,14 @@ class MiniKeyboardView(context: Context) : View(context) {
     /**
      * Quick tap. First tap emits the top (primary) character; a second tap on
      * the same key within [DOUBLE_TAP_MS] replaces it with the bottom
-     * (secondary) character. Only letter secondaries take part — punctuation
-     * secondaries stay on long-press/swipe so Telex transforms like oo→ô
-     * keep working under fast typing.
+     * (secondary) character.
      */
     private fun handleQuickTap(key: KeyDef) {
         performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
 
         val now = SystemClock.uptimeMillis()
-        val secondary = key.secondary
         val isDoubleTap = currentLayer == KeyboardLayer.LETTERS &&
-            secondary != null && secondary.first().isLetter() &&
+            key.secondary != null &&
             key === lastTapKey && now - lastTapTime <= DOUBLE_TAP_MS
 
         if (isDoubleTap) {
@@ -563,9 +660,6 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
             KeyType.NUMERIC   -> setLayer(KeyboardLayer.NUMERIC)
             KeyType.ABC       -> setLayer(KeyboardLayer.LETTERS)
-            KeyType.SYMBOLS   -> {
-                // No extended symbol layer yet — dead key.
-            }
             KeyType.SPACE     -> listener.onSpace()
             KeyType.RETURN    -> listener.onReturn()
         }
@@ -597,6 +691,9 @@ class MiniKeyboardView(context: Context) : View(context) {
         private const val BACKSPACE_INITIAL_DELAY_MS = 400L
         private const val BACKSPACE_REPEAT_MS = 60L
         private const val HAPTIC_FEEDBACK_ENABLED = 1 // matches HapticFeedbackConstants
-        private const val KEY_ROW_HEIGHT_DP = 46f
+
+        private const val HANDLE_HEIGHT_DP = 14f
+        private const val HANDLE_PILL_WIDTH_DP = 40f
+        private const val HANDLE_PILL_HEIGHT_DP = 4f
     }
 }
