@@ -200,7 +200,7 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Letters layer. Row 1 is 10 columns so both R and the Telex tone key F
     // keep a top slot.
     private val letterKeys: List<List<KeyDef>> = listOf(
-        // Row 1
+        // Row 1 — "," at the right end, "." below it
         listOf(
             KeyDef("W", "Q"),
             KeyDef("E", null, isVowel = true),
@@ -211,9 +211,9 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("U", null, isVowel = true),
             KeyDef("I", null, isVowel = true),
             KeyDef("O", null, isVowel = true),
-            KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
+            KeyDef(",", "."),
         ),
-        // Row 2 — "," is the last key, "." below it
+        // Row 2 — backspace at the end
         listOf(
             KeyDef("A", null, isVowel = true),
             KeyDef("S", "Z"),
@@ -223,7 +223,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("J", "N"),
             KeyDef("M", "K"),
             KeyDef("L", "?"),
-            KeyDef(",", "."),
+            KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
         // Row 3 — control row with variable-width spans
         listOf(
@@ -234,45 +234,41 @@ class MiniKeyboardView(context: Context) : View(context) {
         ),
     )
 
-    // Numeric layer. Rows 1–2 are 11 columns so the shift-symbols row
-    // `~!@#$%^&*()_` sits directly under `1234567890-`.
+    // Numeric layer. Digits carry their shifted symbol as secondary, like a
+    // computer keyboard; the remaining symbols fill row 2.
     private val numericKeys: List<List<KeyDef>> = listOf(
-        // Row 1 — digits plus trailing dash
+        // Row 1 — digits with shift symbols, dash at the right end
         listOf(
-            KeyDef("1", null),
-            KeyDef("2", null),
-            KeyDef("3", null),
-            KeyDef("4", null),
-            KeyDef("5", null),
-            KeyDef("6", null),
-            KeyDef("7", null),
-            KeyDef("8", null),
-            KeyDef("9", null),
-            KeyDef("0", null),
-            KeyDef("-", null),
+            KeyDef("1", "!"),
+            KeyDef("2", "@"),
+            KeyDef("3", "#"),
+            KeyDef("4", "$"),
+            KeyDef("5", "%"),
+            KeyDef("6", "^"),
+            KeyDef("7", "&"),
+            KeyDef("8", "*"),
+            KeyDef("9", "("),
+            KeyDef("0", ")"),
+            KeyDef("-", "_"),
         ),
-        // Row 2 — shifted symbols
+        // Row 2 — remaining punctuation, backspace at the end
         listOf(
-            KeyDef("~", null),
-            KeyDef("!", null),
-            KeyDef("@", null),
-            KeyDef("#", null),
-            KeyDef("$", null),
-            KeyDef("%", null),
-            KeyDef("^", null),
-            KeyDef("&", null),
-            KeyDef("*", null),
-            KeyDef("(", null),
-            KeyDef(")", null),
-            KeyDef("_", null),
+            KeyDef("`", "~"),
+            KeyDef("=", "+"),
+            KeyDef("[", "{"),
+            KeyDef("]", "}"),
+            KeyDef("\\", "|"),
+            KeyDef(";", ":"),
+            KeyDef("'", "\""),
+            KeyDef("<", ">"),
+            KeyDef("/", "?"),
+            KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
-        // Row 3 — control row with variable-width spans
+        // Row 3 — control row, "," below "." on the right of the space
         listOf(
             KeyDef("ABC", null, widthUnits = 2f, keyType = KeyType.ABC),
-            KeyDef(",", null),
-            KeyDef(".", null),
             KeyDef(" ", null, widthUnits = 3f, keyType = KeyType.SPACE),
-            KeyDef("⌫", null, widthUnits = 2f, keyType = KeyType.BACKSPACE),
+            KeyDef(".", ","),
         ),
     )
 
@@ -511,7 +507,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             MotionEvent.ACTION_MOVE -> {
                 if (dragActive) {
                     val density = resources.displayMetrics.density
-                    val rowDelta = (event.y - dragStartY) / density / keys.size
+                    val rowDelta = (dragStartY - event.y) / density / keys.size
                     rowHeightDp = (dragStartRowDp + rowDelta)
                         .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
                     requestLayout()
@@ -676,6 +672,9 @@ class MiniKeyboardView(context: Context) : View(context) {
             if (shiftActive) shiftActive = false
             if (replace) {
                 listener.onReplaceCharacter(ch)
+            } else if (currentLayer == KeyboardLayer.NUMERIC) {
+                // Numeric-layer symbols commit directly, no Telex processing.
+                listener.onDirectCharacter(ch)
             } else {
                 listener.onCharacter(ch)
             }
