@@ -28,6 +28,12 @@ interface OnKeyActionListener {
     fun onReturn()
     /** Move the cursor by [delta] characters (negative = left). Space-bar cursor mode. */
     fun onCursorMove(delta: Int)
+    /** Open (or toggle) the clipboard layer. */
+    fun onClipboard()
+    /** Paste the clipboard history item at [index]. */
+    fun onClipboardItem(index: Int)
+    /** Remove the clipboard history item at [index]. */
+    fun onClipboardDismiss(index: Int)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,11 +41,12 @@ interface OnKeyActionListener {
 // ─────────────────────────────────────────────────────────────────────────────
 
 private enum class KeyType {
-    CHARACTER, BACKSPACE, SHIFT, NUMERIC, ABC, SPACE, RETURN
+    CHARACTER, BACKSPACE, SHIFT, NUMERIC, ABC, SPACE, RETURN,
+    CLIPBOARD, CLIPBOARD_ITEM, CLIPBOARD_CLOSE
 }
 
 /** Which keyboard layer is currently displayed. */
-private enum class KeyboardLayer { LETTERS, NUMERIC }
+private enum class KeyboardLayer { LETTERS, NUMERIC, CLIPBOARD }
 
 private data class KeyDef(
     val primary: String,
@@ -47,6 +54,8 @@ private data class KeyDef(
     val isVowel: Boolean = false,
     val widthUnits: Float = 1f,
     val keyType: KeyType = KeyType.CHARACTER,
+    /** Position in the clipboard history (CLIPBOARD_ITEM keys only). */
+    val index: Int = -1,
 ) {
     /** Pixel bounds set during layout. */
     var left: Float = 0f
@@ -142,6 +151,13 @@ class MiniKeyboardView(context: Context) : View(context) {
     private val functionTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
     }
+    private val functionBoldTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        isFakeBoldText = true
+    }
+    private val clipboardItemTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.LEFT
+    }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     // ── Corner radius ─────────────────────────────────────────────────────
@@ -187,6 +203,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             vowelTextPaint.color = 0xFFFF8A50.toInt() // orange accent
             secondaryTextPaint.color = 0xFF9AA0A6.toInt()
             functionTextPaint.color = 0xFFBDC1C6.toInt()
+            functionBoldTextPaint.color = 0xFFBDC1C6.toInt()
+            clipboardItemTextPaint.color = 0xFFE8EAED.toInt()
             handlePaint.color = 0x66E8EAED.toInt()
         } else {
             bgPaint.color = 0xFFC7CBD2.toInt()
@@ -197,6 +215,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             vowelTextPaint.color = 0xFFFF6D00.toInt() // orange accent
             secondaryTextPaint.color = 0xFF9E9E9E.toInt()
             functionTextPaint.color = 0xFF616161.toInt()
+            functionBoldTextPaint.color = 0xFF616161.toInt()
+            clipboardItemTextPaint.color = 0xFF212121.toInt()
             handlePaint.color = 0x66808080.toInt()
         }
     }
@@ -242,7 +262,8 @@ class MiniKeyboardView(context: Context) : View(context) {
         listOf(
             KeyDef("⇧", null, widthUnits = 1.5f, keyType = KeyType.SHIFT),
             KeyDef("123", null, widthUnits = 1f, keyType = KeyType.NUMERIC),
-            KeyDef(" ", null, widthUnits = 5f, keyType = KeyType.SPACE),
+            KeyDef(" ", null, widthUnits = 4f, keyType = KeyType.SPACE),
+            KeyDef("📋", null, widthUnits = 1f, keyType = KeyType.CLIPBOARD),
             KeyDef("⏎", null, widthUnits = 1.5f, keyType = KeyType.RETURN),
         ),
     )
@@ -281,14 +302,37 @@ class MiniKeyboardView(context: Context) : View(context) {
         // 11 total units so the dot matches the symbol-key width in rows 1–2.
         listOf(
             KeyDef("ABC", null, widthUnits = 1.5f, keyType = KeyType.ABC),
-            KeyDef(" ", null, widthUnits = 7f, keyType = KeyType.SPACE),
+            KeyDef(" ", null, widthUnits = 6f, keyType = KeyType.SPACE),
+            KeyDef("📋", null, widthUnits = 1f, keyType = KeyType.CLIPBOARD),
             KeyDef(".", ","),
             KeyDef("⏎", null, widthUnits = 1.5f, keyType = KeyType.RETURN),
         ),
     )
 
+    // Clipboard layer rows, rebuilt from the current history (see showClipboardLayer).
+    private var clipboardItems: List<String> = emptyList()
+    private var clipboardRows: List<List<KeyDef>> = emptyList()
+
+    /** Fixed close button, pinned to the top-right slot corner — no dedicated row. */
+    private val clipboardCloseKey = KeyDef("✕", null, keyType = KeyType.CLIPBOARD_CLOSE)
+
+    // Clipboard list scroll state (drag vertically on an item row to scroll).
+    private var clipboardScrollPx: Float = 0f
+    private var clipboardScrollActive: Boolean = false
+    private var clipboardScrollStartY: Float = 0f
+    private var clipboardScrollStartPx: Float = 0f
+
+    // Height of one clipboard item slot. Computed per layout — NOT keyHeight,
+    // which is stale when the layer switches because the view size does not
+    // change (clipboard layer is the same total height as the letters layer).
+    private var clipboardSlotH: Float = 0f
+
     private val keys: List<List<KeyDef>>
-        get() = if (currentLayer == KeyboardLayer.LETTERS) letterKeys else numericKeys
+        get() = when (currentLayer) {
+            KeyboardLayer.LETTERS   -> letterKeys
+            KeyboardLayer.NUMERIC   -> numericKeys
+            KeyboardLayer.CLIPBOARD -> clipboardRows
+        }
 
     // ─────────────────────────────────────────────────────────────────────
     // Measurement & Layout
@@ -301,7 +345,10 @@ class MiniKeyboardView(context: Context) : View(context) {
             MeasureSpec.getSize(widthMeasureSpec)
         }
         val density = resources.displayMetrics.density
-        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * keys.size) * density).toInt()
+        // The clipboard layer keeps the main keyboard height (letterKeys.size
+        // rows) and fits its 5 compact item slots inside it.
+        val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) letterKeys.size else keys.size
+        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * rows) * density).toInt()
         setMeasuredDimension(width, height)
     }
 
@@ -312,7 +359,8 @@ class MiniKeyboardView(context: Context) : View(context) {
 
         val density = resources.displayMetrics.density
         handleHeightPx = HANDLE_HEIGHT_DP * density
-        val rows = keys.size
+        // Clipboard layer: compact item slots in the main keyboard's height.
+        val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS else keys.size
         keyHeight = (h - handleHeightPx) / rows
         keyWidth = w.toFloat() / rows  // rough default for hit padding
 
@@ -321,8 +369,12 @@ class MiniKeyboardView(context: Context) : View(context) {
         vowelTextPaint.textSize = keyHeight * 0.32f
         secondaryTextPaint.textSize = keyHeight * 0.20f
         functionTextPaint.textSize = keyHeight * 0.24f
+        functionBoldTextPaint.textSize = keyHeight * 0.30f
+        // Clip rows are short — scale text relative to the row, not the key.
+        clipboardItemTextPaint.textSize = keyHeight * 0.34f
 
         layoutKeys()
+        clipboardScrollPx = clipboardScrollPx.coerceIn(0f, clipboardMaxScrollPx)
 
         // Cursor mode granularity: a quarter of a letter-column width per
         // character — smaller step per char makes the cursor move faster
@@ -333,6 +385,10 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     /** Assign pixel bounds to every key based on column spans. */
     private fun layoutKeys() {
+        if (currentLayer == KeyboardLayer.CLIPBOARD) {
+            layoutClipboardKeys()
+            return
+        }
         for ((rowIdx, row) in keys.withIndex()) {
             val y = handleHeightPx + rowIdx * keyHeight
             var x = 0f
@@ -352,15 +408,112 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
     }
 
+    /**
+     * Clipboard layer layout: item rows stack full-width from the top,
+     * shifted up by [clipboardScrollPx]. The close button is a small FAB
+     * near the bottom-right corner, floating above the list.
+     */
+    private fun layoutClipboardKeys() {
+        val density = resources.displayMetrics.density
+        val r = CLIP_FAB_RADIUS_DP * density
+        val cx = viewWidth - (CLIP_FAB_MARGIN_DP + r) * density
+        val cy = viewHeight - (CLIP_FAB_MARGIN_DP + r) * density
+        clipboardCloseKey.left = cx - r
+        clipboardCloseKey.top = cy - r
+        clipboardCloseKey.right = cx + r
+        clipboardCloseKey.bottom = cy + r
+
+        // Slot height from the layer's own geometry, not keyHeight (which is
+        // stale until a size change — see clipboardSlotH declaration).
+        clipboardSlotH = (viewHeight - handleHeightPx) / CLIPBOARD_SLOTS
+        clipboardItemTextPaint.textSize = clipboardSlotH * 0.34f
+
+        var y = handleHeightPx - clipboardScrollPx
+        for (row in clipboardRows) {
+            for (key in row) {
+                key.left = 0f
+                key.right = viewWidth.toFloat()
+                key.top = y
+                key.bottom = y + clipboardSlotH
+            }
+            y += clipboardSlotH
+        }
+    }
+
+    /** Called when a new input session starts — always return to letters. */
+    fun resetLayer() {
+        setLayer(KeyboardLayer.LETTERS)
+    }
+
     /** Switch the displayed layer and re-layout. */
     private fun setLayer(layer: KeyboardLayer) {
         if (currentLayer == layer) return
         currentLayer = layer
-        if (layer == KeyboardLayer.NUMERIC) shiftActive = false
+        if (layer != KeyboardLayer.LETTERS) shiftActive = false
         lastTapKey = null
+        // Row count can differ between layers — remeasure so the IME window
+        // resizes and keyHeight is recomputed in onSizeChanged.
+        requestLayout()
         layoutKeys()
         invalidate()
     }
+
+    /**
+     * Show the clipboard layer with the given history items, one full-width
+     * row per item. Tapping the clipboard button while the layer is open
+     * toggles it closed, back to letters.
+     */
+    fun showClipboardLayer(items: List<String>) {
+        if (currentLayer == KeyboardLayer.CLIPBOARD) {
+            setLayer(KeyboardLayer.LETTERS)
+            return
+        }
+        clipboardItems = items
+        clipboardScrollPx = 0f  // newest item is first — start at the top
+        rebuildClipboardRows()
+        currentLayer = KeyboardLayer.CLIPBOARD
+        shiftActive = false
+        lastTapKey = null
+        requestLayout()
+        layoutKeys()
+        invalidate()
+    }
+
+    /** Refresh the item rows when the clipboard changes while the layer is open. */
+    fun updateClipboardItems(items: List<String>) {
+        if (currentLayer != KeyboardLayer.CLIPBOARD) return
+        clipboardItems = items
+        rebuildClipboardRows()
+        clipboardScrollPx = clipboardScrollPx.coerceIn(0f, clipboardMaxScrollPx)
+        requestLayout()
+        layoutKeys()
+        invalidate()
+    }
+
+    private fun rebuildClipboardRows() {
+        clipboardRows = clipboardItems.mapIndexed { index, text ->
+            // Display label only — pasting goes through the index, so the
+            // full text stays in the IME's history untouched.
+            val label = text.replace('\n', ' ').let {
+                if (it.length > CLIP_LABEL_MAX_CHARS) it.take(CLIP_LABEL_MAX_CHARS) + "…" else it
+            }
+            listOf(KeyDef(label, null, index = index, keyType = KeyType.CLIPBOARD_ITEM))
+        }
+    }
+
+    /** True when the touch x falls in the per-item dismiss (✕) zone. */
+    private fun isInDismissZone(key: KeyDef, x: Float): Boolean {
+        val zone = resources.displayMetrics.density * CLIP_DISMISS_ZONE_DP
+        return x >= key.right - zone
+    }
+
+    /** Max scroll offset so the last item can reach the last slot. */
+    private val clipboardMaxScrollPx: Float
+        get() {
+            val itemRows = clipboardItems.size.coerceAtLeast(1)
+            val regionH = clipboardSlotH * CLIPBOARD_SLOTS
+            return (itemRows * clipboardSlotH - regionH).coerceAtLeast(0f)
+        }
 
     // ─────────────────────────────────────────────────────────────────────
     // Drawing
@@ -375,6 +528,20 @@ class MiniKeyboardView(context: Context) : View(context) {
         for (row in keys) {
             for (key in row) {
                 drawKey(canvas, key, key == downKey)
+            }
+        }
+
+        if (currentLayer == KeyboardLayer.CLIPBOARD) {
+            // Close FAB floats above the list, and the empty state is a plain
+            // centered hint — the layer itself is otherwise blank.
+            drawClipboardFab(canvas)
+            if (clipboardItems.isEmpty()) {
+                canvas.drawText(
+                    "Clipboard empty",
+                    viewWidth / 2f,
+                    viewHeight / 2f,
+                    functionTextPaint
+                )
             }
         }
 
@@ -410,9 +577,71 @@ class MiniKeyboardView(context: Context) : View(context) {
         val cy = key.top + (key.bottom - key.top) / 2f
 
         when (key.keyType) {
-            KeyType.CHARACTER -> drawCharacterKey(canvas, key, cx, cy)
-            else              -> drawFunctionKey(canvas, key, cx, cy)
+            KeyType.CHARACTER      -> drawCharacterKey(canvas, key, cx, cy)
+            KeyType.CLIPBOARD_ITEM -> drawClipboardItemKey(canvas, key)
+            KeyType.CLIPBOARD      -> drawClipboardKey(canvas, cx, cy)
+            else                   -> drawFunctionKey(canvas, key, cx, cy)
         }
+    }
+
+    /** Floating close button: small circular FAB near the bottom-right,
+     *  accent-colored for contrast, labeled ABC — it returns to the letters
+     *  layer. Floats above the item rows with a drop shadow. */
+    private fun drawClipboardFab(canvas: Canvas) {
+        val density = resources.displayMetrics.density
+        val key = clipboardCloseKey
+        val r = (key.right - key.left) / 2f
+        val cx = (key.left + key.right) / 2f
+        val cy = (key.top + key.bottom) / 2f
+
+        val fabPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            // Accent orange (same as the vowel accent) stands out from the
+            // grey key background.
+            color = vowelTextPaint.color
+            setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000)
+        }
+        canvas.drawCircle(cx, cy, r, fabPaint)
+
+        val labelPaint = Paint(functionTextPaint).apply {
+            color = 0xFF212121.toInt()  // dark label reads on both accent oranges
+            textSize = r * 0.55f
+        }
+        canvas.drawText("ABC", cx, cy + r * 0.2f, labelPaint)
+    }
+
+    /** Clipboard button glyph: small monochrome outlined clipboard icon,
+     *  matching the other function-key labels (⇧ ⏎) instead of the color emoji. */
+    private fun drawClipboardKey(canvas: Canvas, cx: Float, cy: Float) {
+        val stroke = resources.displayMetrics.density * 1.1f
+        val strokePaint = Paint(functionTextPaint).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = stroke
+        }
+        val hw = keyHeight * 0.11f  // half width
+        val hh = keyHeight * 0.14f  // half height
+        val radius = keyHeight * 0.03f
+        // Board
+        canvas.drawRoundRect(RectF(cx - hw, cy - hh, cx + hw, cy + hh), radius, radius, strokePaint)
+        // Top tab
+        val tabW = hw * 0.45f
+        canvas.drawRect(RectF(cx - tabW, cy - hh - stroke, cx + tabW, cy - hh + stroke), strokePaint)
+        // Divider line under the tab
+        canvas.drawLine(cx - tabW, cy - hh * 0.4f, cx + tabW, cy - hh * 0.4f, strokePaint)
+    }
+
+    /** Clipboard history rows: single truncated line, left-aligned like a list,
+     *  with a dismiss (✕) button on the right. */
+    private fun drawClipboardItemKey(canvas: Canvas, key: KeyDef) {
+        val density = resources.displayMetrics.density
+        val pad = 12f * density
+        val baseline = key.top + clipboardSlotH * 0.65f
+        canvas.drawText(key.primary, key.left + pad, baseline, clipboardItemTextPaint)
+        // Dismiss button — own size, rows are shorter than normal keys now.
+        val dismissPaint = Paint(clipboardItemTextPaint).apply {
+            textAlign = Paint.Align.CENTER
+        }
+        val zone = CLIP_DISMISS_ZONE_DP * density
+        canvas.drawText("✕", key.right - zone / 2f, baseline, dismissPaint)
     }
 
     private fun drawCharacterKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
@@ -463,16 +692,17 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
 
         if (text.isNotEmpty()) {
-            canvas.drawText(text, cx, cy + keyHeight * 0.1f, functionTextPaint)
+            val paint = if (key.keyType == KeyType.SHIFT || key.keyType == KeyType.RETURN) {
+                functionBoldTextPaint
+            } else {
+                functionTextPaint
+            }
+            canvas.drawText(text, cx, cy + keyHeight * 0.1f, paint)
         }
 
-        // Space bar subtle label
+        // Space bar label, styled like a regular letter key.
         if (key.keyType == KeyType.SPACE) {
-            val smallPaint = Paint(functionTextPaint).apply {
-                textSize = keyHeight * 0.18f
-                alpha = 128
-            }
-            canvas.drawText("space", cx, cy + keyHeight * 0.1f, smallPaint)
+            canvas.drawText("space", cx, cy + keyHeight * 0.1f, primaryTextPaint)
         }
     }
 
@@ -511,6 +741,10 @@ class MiniKeyboardView(context: Context) : View(context) {
                 if (downKey?.keyType == KeyType.BACKSPACE) {
                     // Hold-to-repeat instead of long-press secondary.
                     scheduleBackspaceRepeat()
+                } else if (downKey?.keyType == KeyType.CLIPBOARD_ITEM) {
+                    // No long-press: item rows are for tap-to-paste and
+                    // drag-to-scroll; a long-press pasting mid-scroll would
+                    // be accidental.
                 } else {
                     longPressRunnable = Runnable {
                         if (downKey != null && !isSwipeDetected && !longPressTriggered) {
@@ -538,7 +772,10 @@ class MiniKeyboardView(context: Context) : View(context) {
             MotionEvent.ACTION_MOVE -> {
                 if (dragActive) {
                     val density = resources.displayMetrics.density
-                    val rowDelta = (dragStartY - event.y) / density / keys.size
+                    // Use the visible row count — the clipboard layer always
+                    // shows its 5 compact slots even when the list is longer.
+                    val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS else keys.size
+                    val rowDelta = (dragStartY - event.y) / density / rows
                     rowHeightDp = (dragStartRowDp + rowDelta)
                         .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
                     requestLayout()
@@ -558,6 +795,23 @@ class MiniKeyboardView(context: Context) : View(context) {
                     }
                     invalidate()
                     return true
+                }
+
+                if (downKey?.keyType == KeyType.CLIPBOARD_ITEM) {
+                    // Drag vertically on an item row to scroll the list.
+                    val dy = event.y - downY
+                    if (!clipboardScrollActive && abs(dy) > touchSlop) {
+                        clipboardScrollActive = true
+                        clipboardScrollStartY = event.y
+                        clipboardScrollStartPx = clipboardScrollPx
+                    }
+                    if (clipboardScrollActive) {
+                        clipboardScrollPx = (clipboardScrollStartPx - (event.y - clipboardScrollStartY))
+                            .coerceIn(0f, clipboardMaxScrollPx)
+                        layoutKeys()
+                        invalidate()
+                        return true
+                    }
                 }
 
                 if (downKey == null || longPressTriggered) return true
@@ -595,6 +849,17 @@ class MiniKeyboardView(context: Context) : View(context) {
                         performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
                         lastTapKey = null
                         commitSecondary(key, replace = false)
+                    } else if (key.keyType == KeyType.CLIPBOARD_ITEM) {
+                        if (clipboardScrollActive) {
+                            // Scroll gesture, not a tap — keep the position.
+                        } else {
+                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            if (isInDismissZone(key, event.x)) {
+                                onKeyActionListener?.onClipboardDismiss(key.index)
+                            } else {
+                                onKeyActionListener?.onClipboardItem(key.index)
+                            }
+                        }
                     } else {
                         handleQuickTap(key)
                     }
@@ -602,6 +867,7 @@ class MiniKeyboardView(context: Context) : View(context) {
 
                 backspaceRepeatActive = false
                 spaceCursorMode = false
+                clipboardScrollActive = false
                 lastCursorChars = 0
                 downKey = null
                 invalidate()
@@ -614,6 +880,7 @@ class MiniKeyboardView(context: Context) : View(context) {
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
                 backspaceRepeatActive = false
                 spaceCursorMode = false
+                clipboardScrollActive = false
                 lastCursorChars = 0
                 downKey = null
                 invalidate()
@@ -664,8 +931,20 @@ class MiniKeyboardView(context: Context) : View(context) {
     // ── Key lookup ────────────────────────────────────────────────────────
 
     private fun findKeyAt(x: Float, y: Float): KeyDef? {
+        // The clipboard close FAB floats above the list — hit it first.
+        if (currentLayer == KeyboardLayer.CLIPBOARD) {
+            val ck = clipboardCloseKey
+            val r = (ck.right - ck.left) / 2f
+            val cx = (ck.left + ck.right) / 2f
+            val cy = (ck.top + ck.bottom) / 2f
+            val dx = x - cx
+            val dy = y - cy
+            if (dx * dx + dy * dy <= r * r) return ck
+        }
         for (row in keys) {
             for (key in row) {
+                // Off-view keys (scrolled clipboard items) never hit.
+                if (key.bottom <= handleHeightPx || key.top >= viewHeight) continue
                 // Slightly expand hit area for narrow keys
                 val pad = min(keyWidth * 0.05f, 4f)
                 if (x >= key.left - pad && x <= key.right + pad &&
@@ -708,6 +987,9 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyType.ABC       -> setLayer(KeyboardLayer.LETTERS)
             KeyType.SPACE     -> listener.onSpace()
             KeyType.RETURN    -> listener.onReturn()
+            KeyType.CLIPBOARD -> listener.onClipboard()
+            KeyType.CLIPBOARD_ITEM -> listener.onClipboardItem(key.index)
+            KeyType.CLIPBOARD_CLOSE -> setLayer(KeyboardLayer.LETTERS)
         }
     }
 
@@ -744,5 +1026,23 @@ class MiniKeyboardView(context: Context) : View(context) {
         private const val HANDLE_HEIGHT_DP = 14f
         private const val HANDLE_PILL_WIDTH_DP = 40f
         private const val HANDLE_PILL_HEIGHT_DP = 4f
+
+        /** Max chars of a clipboard item shown on the list row (display only;
+         *  keeps the label clear of the dismiss button). */
+        private const val CLIP_LABEL_MAX_CHARS = 30
+
+        /** Item slots visible on the clipboard layer without scrolling — 5
+         *  compact rows squeezed into the main keyboard's height; the full
+         *  history (30) scrolls through them. */
+        private const val CLIPBOARD_SLOTS = 5
+
+        /** Width of the per-item dismiss (✕) button zone. */
+        private const val CLIP_DISMISS_ZONE_DP = 40f
+
+        /** Radius of the floating close FAB on the clipboard layer. */
+        private const val CLIP_FAB_RADIUS_DP = 18f
+
+        /** Distance of the close FAB from the layer's bottom/right edges. */
+        private const val CLIP_FAB_MARGIN_DP = 10f
     }
 }

@@ -1,5 +1,9 @@
 package com.miniqwerty.kb
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.SharedPreferences
 import android.inputmethodservice.InputMethodService
 import android.view.KeyEvent
 import android.view.View
@@ -36,9 +40,52 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     // ── View ─────────────────────────────────────────────────────────────
     private lateinit var keyboardView: MiniKeyboardView
 
+    // ── Clipboard history ────────────────────────────────────────────────
+    /** In-memory copy history, newest first. Session-only by design. */
+    private val clipboardHistory = ArrayList<String>()
+
+    /** Texts the user dismissed — kept out even though the system clipboard
+     *  still holds them, until a fresh copy of that text re-arms it. */
+    private val dismissedClips = LinkedHashSet<String>()
+
+    private lateinit var clipboardManager: ClipboardManager
+
+    private val onPrimaryClipChanged = ClipboardManager.OnPrimaryClipChangedListener {
+        // Runs on the main thread; the system filters callbacks by clipboard
+        // access (IME visible) on Android 10+. A change event is a fresh copy
+        // by the user — it re-arms a previously dismissed text.
+        addToHistory(readClipboardText(), freshCopy = true)
+        if (::keyboardView.isInitialized) {
+            keyboardView.updateClipboardItems(clipboardHistory)
+        }
+    }
+
+    // Applies a theme change the moment the settings screen writes it —
+    // same process, so the SharedPreferences listener fires live.
+    private val onPrefsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Prefs.KEY_THEME_MODE && ::keyboardView.isInitialized) {
+            keyboardView.refreshTheme()
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // InputMethodService lifecycle
     // ─────────────────────────────────────────────────────────────────────
+
+    override fun onCreate() {
+        super.onCreate()
+        clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboardManager.addPrimaryClipChangedListener(onPrimaryClipChanged)
+        getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(onPrefsChanged)
+    }
+
+    override fun onDestroy() {
+        clipboardManager.removePrimaryClipChangedListener(onPrimaryClipChanged)
+        getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(onPrefsChanged)
+        super.onDestroy()
+    }
 
     override fun onCreateInputView(): View {
         keyboardView = MiniKeyboardView(this)
@@ -51,6 +98,9 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         editorInfo = info
         // Re-apply user theme/height preferences (may have changed in settings).
         keyboardView.refreshTheme()
+        // Every new input session starts on the letters layer — the previous
+        // layer (numeric/clipboard) is not remembered.
+        keyboardView.resetLayer()
         // Reset composing state when switching input targets
         commitPending()
         rawBuffer.clear()
@@ -192,6 +242,52 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         ic.setSelection(target, target)
     }
 
+    override fun onClipboard() {
+        // Re-read the current clip first: while the keyboard was hidden the
+        // change listener does not fire, so catch up here. This is a re-read
+        // of an old clip, not a fresh copy — respect dismissals.
+        val current = readClipboardText()
+        if (current != null && current !in dismissedClips) {
+            addToHistory(current, freshCopy = false)
+        }
+        keyboardView.showClipboardLayer(clipboardHistory)
+    }
+
+    override fun onClipboardItem(index: Int) {
+        val text = clipboardHistory.getOrNull(index) ?: return
+        // Move to top BEFORE any setPrimaryClip below, so the change listener
+        // this triggers sees the text already first and dedupes it.
+        addToHistory(text, freshCopy = true)
+
+        val ic = currentInputConnection
+        if (ic != null) {
+            // Paste into the focused field. A pending Telex word is committed
+            // first (explicit user action — see commitBuffer()), then the
+            // pasted text follows it.
+            commitBuffer(ic)
+            ic.commitText(text, 1)
+            updateComposingText()
+        } else {
+            // No focused text field — re-copy the item so it is ready for the
+            // next paste.
+            clipboardManager.setPrimaryClip(ClipData.newPlainText(CLIP_LABEL, text))
+        }
+        // Stay on the clipboard layer; the pasted item moved to the top.
+        keyboardView.updateClipboardItems(clipboardHistory)
+    }
+
+    override fun onClipboardDismiss(index: Int) {
+        if (index !in clipboardHistory.indices) return
+        val text = clipboardHistory.removeAt(index)
+        // The system clipboard still holds this text — keep it out of the
+        // history until the user copies it again.
+        dismissedClips.add(text)
+        while (dismissedClips.size > MAX_CLIP_ITEMS) {
+            dismissedClips.remove(dismissedClips.first())
+        }
+        keyboardView.updateClipboardItems(clipboardHistory)
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Hard-key fallback
     // ─────────────────────────────────────────────────────────────────────
@@ -219,6 +315,50 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         }
 
         return super.onKeyDown(keyCode, event)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Clipboard history helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * First text item of the primary clip, or null for blank / non-text clips
+     * (images would otherwise surface as useless `content://` URIs). OEM
+     * clipboard guards (e.g. MIUI) can throw SecurityException — degrade to null.
+     */
+    private fun readClipboardText(): String? {
+        return try {
+            val clip = clipboardManager.primaryClip ?: return null
+            for (i in 0 until clip.itemCount) {
+                val text = clip.getItemAt(i).text?.toString()
+                if (!text.isNullOrBlank()) return text
+            }
+            null
+        } catch (e: SecurityException) {
+            null
+        }
+    }
+
+    /**
+     * Insert [text] at the head of the history; dedupe identical newest entry.
+     * [freshCopy] means the text just arrived as a clipboard change event
+     * (user copied it) — that re-arms a previously dismissed text; a plain
+     * re-read keeps dismissals in force.
+     */
+    private fun addToHistory(text: String?, freshCopy: Boolean) {
+        if (text.isNullOrBlank()) return
+        val capped = if (text.length > MAX_CLIP_CHARS) text.take(MAX_CLIP_CHARS) else text
+        if (freshCopy) {
+            dismissedClips.remove(capped)
+        } else if (capped in dismissedClips) {
+            return
+        }
+        if (capped == clipboardHistory.firstOrNull()) return
+        clipboardHistory.remove(capped)
+        clipboardHistory.add(0, capped)
+        while (clipboardHistory.size > MAX_CLIP_ITEMS) {
+            clipboardHistory.removeAt(clipboardHistory.size - 1)
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -290,5 +430,15 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     companion object {
         /** Max chars probed around the caret to locate the cursor position. */
         private const val CURSOR_PROBE_LEN = 5000
+
+        /** Clipboard history size cap (the list scrolls, so it can be long). */
+        private const val MAX_CLIP_ITEMS = 30
+
+        /** Per-item length cap — stays well under the ~1MB Binder transaction
+         *  limit for commitText/setPrimaryClip. */
+        private const val MAX_CLIP_CHARS = 50_000
+
+        /** Label used for ClipData created when re-copying an item. */
+        private const val CLIP_LABEL = "clipboard"
     }
 }
