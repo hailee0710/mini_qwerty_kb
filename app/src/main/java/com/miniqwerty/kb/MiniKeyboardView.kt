@@ -197,35 +197,37 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Layout definitions
     // ─────────────────────────────────────────────────────────────────────
 
-    // Letters layer. Layout chosen by tools/layout_analyzer.py against a
-    // Vietnamese word-frequency corpus: tone keys and common letters on
-    // single-tap slots, rarest letters as double-tap secondaries. A, E, O, D
-    // sit on keys without secondaries so the Telex same-key digraphs
-    // aa/ee/oo/dd stay typeable via quick double-press.
+    // Letters layer. QWERTY-familiar layout from tools/layout_analyzer.py:
+    // the familiarity objective (effort + λ·displacement from each letter's
+    // QWERTY home, λ=0.5) keeps every key at or next to its QWERTY position,
+    // with the 9 rarest letters as double-tap secondaries on the key nearest
+    // their QWERTY home. Tone keys X, S, F, R, J sit where Vietnamese Telex
+    // typists expect them. A, E, O, D sit on keys without secondaries so the
+    // Telex same-key digraphs aa/ee/oo/dd stay typeable via quick double-press.
     private val letterKeys: List<List<KeyDef>> = listOf(
         // Row 1 — "," at the right end, "." below it
         listOf(
-            KeyDef("X", "Z"),
-            KeyDef("F", "P"),
-            KeyDef("C", null),
-            KeyDef("S", "V"),
-            KeyDef("W", "Y"),
-            KeyDef("A", null, isVowel = true),
-            KeyDef("I", null, isVowel = true),
-            KeyDef("U", "K", isVowel = true),
-            KeyDef("J", null),
+            KeyDef("X", "Q"),
+            KeyDef("W", null),
+            KeyDef("E", null, isVowel = true),
+            KeyDef("R", null),
+            KeyDef("T", null),
+            KeyDef("H", "Y"),
+            KeyDef("U", null, isVowel = true),
+            KeyDef("I", "P", isVowel = true),
+            KeyDef("O", null, isVowel = true),
             KeyDef(",", "."),
         ),
         // Row 2 — backspace at the end
         listOf(
-            KeyDef("R", "Q"),
+            KeyDef("A", null, isVowel = true),
+            KeyDef("S", "Z"),
             KeyDef("D", null),
-            KeyDef("T", "B"),
-            KeyDef("H", "M"),
-            KeyDef("N", "L"),
-            KeyDef("O", null, isVowel = true),
-            KeyDef("E", null, isVowel = true),
-            KeyDef("G", null),
+            KeyDef("F", "C"),
+            KeyDef("G", "V"),
+            KeyDef("N", "B"),
+            KeyDef("J", "K"),
+            KeyDef("M", "L"),
             KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
         // Row 3 — control row with variable-width spans

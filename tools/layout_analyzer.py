@@ -220,6 +220,16 @@ TONE_KEYS = frozenset("sfrxj")
 # have no secondary, or a double-tap would replace instead of repeat.
 CLEAN_KEYS = frozenset("adeo")
 
+# QWERTY home position per letter, in the same grid as the keyboard
+# (keyboard row 1 = QWERTY row 1, keyboard row 2 = merged QWERTY rows 2+3;
+# row-3 letters keep a y of 1.5 so they prefer the bottom row but cost a
+# small shift). Used by the familiarity term.
+QWERTY_HOME = {
+    **{ch: (i + 0.5, 0.0) for i, ch in enumerate("qwertyuiop")},
+    **{ch: (i + 0.5, 1.0) for i, ch in enumerate("asdfghjkl")},
+    **{ch: (i + 1.5, 1.5) for i, ch in enumerate("zxcvbnm")},
+}
+
 
 def key_center(key):
     return (key["x"], 0.0 if key["row"] == 0 else 1.0)
@@ -240,9 +250,10 @@ def sec_key_ids(assign, roles):
     return {assign[ch] for ch in roles if roles[ch] == "S"}
 
 
-def legal(assign, roles):
+def legal(assign, roles, pinned=None):
     """True when constraints hold: tone keys single-tap, digraph letters on
-    keys without secondaries, every key hosts at most one secondary."""
+    keys without secondaries, every key hosts at most one secondary, and
+    pinned letters sit on their pinned keys as primary."""
     sec = sec_key_ids(assign, roles)
     if len(sec) != 9:
         return False  # 9 secondary letters must sit on 9 distinct keys
@@ -252,6 +263,10 @@ def legal(assign, roles):
     for ch in CLEAN_KEYS:
         if roles[ch] != "P" or assign[ch] in sec:
             return False
+    if pinned:
+        for ch, key_id in pinned.items():
+            if assign.get(ch) != key_id or roles.get(ch) != "P":
+                return False
     return True
 
 
@@ -297,6 +312,13 @@ class Eval:
             return self.cache[t]
         letter_taps, pair_cost = self._costs(assign, roles)
 
+        # Familiarity: frequency-weighted displacement from each letter's
+        # QWERTY home position, in keyboard grid units.
+        fam_raw = 0.0
+        for ch, freq in self.unigrams.items():
+            if ch in assign:
+                fam_raw += freq * dist(key_center(self.by_id[assign[ch]]), QWERTY_HOME[ch])
+
         effort = 0.0
         taps = 0.0
         same_thumb_pairs = 0.0
@@ -336,6 +358,8 @@ class Eval:
             "alternation_rate": alt_pairs / total_pairs if total_pairs else 0.0,
             "tone_share": sum(self.tones.values()) / letter_taps_total,
             "words": self.total_words,
+            "fam_per_100": 100.0 * fam_raw / letter_taps_total,
+            "fam_raw": fam_raw,
         }
         self.cache[t] = result
         return result
@@ -351,7 +375,7 @@ def swap_complete(assign, roles, a, b):
     roles[a], roles[b] = roles[b], roles[a]
 
 
-def hill_climb(assign0, roles0, evaluator, max_iter=200):
+def hill_climb(assign0, roles0, evaluator, pinned=None, max_iter=200):
     """Greedy complete letter swaps until no swap improves.
     Returns (assign, roles, steps)."""
     assign = dict(assign0)
@@ -367,7 +391,7 @@ def hill_climb(assign0, roles0, evaluator, max_iter=200):
             for j in range(i + 1, len(letters)):
                 a, b = letters[i], letters[j]
                 swap_complete(assign, roles, a, b)
-                if legal(assign, roles):
+                if legal(assign, roles, pinned):
                     s = evaluator.score(assign, roles)["effort"]
                     if s < best_score - 1e-12:
                         best_score = s
@@ -420,6 +444,75 @@ def random_layout(seed, keys):
         assign[ch] = sec_ids.pop()
         roles[ch] = "S"
     return assign, roles
+
+
+def _pair_min(letters_list, key_ids, by_id):
+    """Greedy 1:1 letter-key pairing by minimum displacement from QWERTY home."""
+    free = list(key_ids)
+    result = {}
+    remaining = set(letters_list)
+    while remaining:
+        _, ch, k = min(
+            (dist(key_center(by_id[k]), QWERTY_HOME[ch]), ch, k)
+            for ch in remaining
+            for k in free
+        )
+        result[ch] = k
+        remaining.discard(ch)
+        free.remove(k)
+    return result
+
+
+def qwerty_layout(keys, stats, pinned=None):
+    """QWERTY-embedded start layout: every letter sits on the key nearest its
+    QWERTY home; the 9 rarest non-constrained letters become double-taps.
+    Letters in `pinned` (letter -> key id) are placed first, as primary."""
+    pinned = pinned or {}
+    unigrams = stats[0]
+    constrained = TONE_KEYS | CLEAN_KEYS
+    rest = sorted((ch for ch in LETTERS if ch not in constrained),
+                  key=lambda ch: unigrams.get(ch, 0))
+    sec_letters = set(rest[:9])
+    roles = {ch: ("P" if ch not in sec_letters else "S") for ch in LETTERS}
+    for ch in pinned:
+        roles[ch] = "P"
+
+    by_id = {k["id"]: k for k in keys}
+    key_ids = [k["id"] for k in keys]
+    assign = dict(pinned)
+    free_keys = [k for k in key_ids if k not in set(pinned.values())]
+    assign.update(_pair_min(
+        [ch for ch in LETTERS if roles[ch] == "P" and ch not in assign],
+        free_keys, by_id))
+
+    # Double-tap letters share a key with another letter; they may not sit on
+    # the keys that host digraph letters (a e o d).
+    clean_hosts = {assign[ch] for ch in CLEAN_KEYS}
+    host_candidates = [k for k in key_ids if k not in clean_hosts]
+    assign.update(_pair_min(sorted(sec_letters), host_candidates, by_id))
+    return assign, roles
+
+
+class CombinedEval:
+    """Search objective = typing effort + λ · QWERTY displacement.
+
+    `score()` returns the base metrics with `effort` replaced by the combined
+    value, so hill_climb and friends work unchanged.
+    """
+
+    def __init__(self, base, lam):
+        self.base = base
+        self.lam = lam
+        self.cache = {}
+
+    def score(self, assign, roles):
+        t = (tuple(sorted(assign.items())), tuple(sorted((ch, roles[ch]) for ch in roles)))
+        if t in self.cache:
+            return self.cache[t]
+        m = dict(self.base.score(assign, roles))
+        m["effort"] = m["effort"] + self.lam * m["fam_raw"]
+        self.cache[t] = m
+        return m
 
 
 def all_single_swaps(assign0, roles0, evaluator, limit=None):
@@ -476,7 +569,7 @@ def line(assign, roles, evaluator, label=""):
     m = evaluator.score(assign, roles)
     print(f"{label:26s} effort {m['effort_per_100']:7.2f}   taps {m['taps_per_100']:7.2f}   "
           f"dt {100*m['secondary_share']:5.1f}%   same-thumb {100*m['same_thumb_rate']:5.1f}%   "
-          f"alt {100*m['alternation_rate']:5.1f}%")
+          f"alt {100*m['alternation_rate']:5.1f}%   fam {m['fam_per_100']:6.2f}")
     return m
 
 
@@ -511,42 +604,33 @@ def main():
               f"({pct:+.1f}%)  taps {m['taps_per_100']:7.2f}  dt {100*m['secondary_share']:4.1f}%")
     print(f"  ({len(singles)} swaps total)")
 
-    # ── greedy improvement path from current ─────────────────────────────────
-    print("\n─ greedy improvement path from current ───────────────────────")
-    ga, gr, steps = hill_climb(assign, roles, evaluator)
-    replay_a, replay_r = dict(assign), dict(roles)
-    base_effort = cur["effort"]
-    for a, b, effort in steps:
-        swap_complete(replay_a, replay_r, a, b)
-        m = evaluator.score(replay_a, replay_r)
-        print(f"  {a.upper()}<->{b.upper():4s} → effort {m['effort_per_100']:7.2f} "
-              f"({100*(effort-base_effort)/base_effort:+.1f}% cum)  dt {100*m['secondary_share']:4.1f}%")
-    print("\n  greedy endpoint:")
-    print(describe(keys, ga, gr))
-    line(ga, gr, evaluator, "greedy endpoint")
-    moved = diff_letters(assign, roles, ga, gr)
-    print(f"  moved: {', '.join(sorted(c.upper() for c in moved))}")
+    # ── QWERTY-embedded reference (familiarity baseline) ─────────────────────
+    print("\n─ QWERTY-embedded reference ───────────────────────────────────")
+    qa, qr = qwerty_layout(keys, stats)
+    assert legal(qa, qr), "qwerty reference violates constraints"
+    print(describe(keys, qa, qr))
+    line(qa, qr, evaluator, "qwerty ref")
 
-    # ── hill-climb with restarts ─────────────────────────────────────────────
-    print("\n─ hill-climb, 20 restarts (all constraints on) ───────────────")
-    best = None
-    for seed in range(20):
-        if seed == 0:
-            start_a, start_r = dict(assign), dict(roles)
-        else:
-            start_a, start_r = random_layout(seed, keys)
-        ca, cr, _ = hill_climb(start_a, start_r, evaluator)
-        e = evaluator.score(ca, cr)["effort"]
-        if best is None or e < best[0]:
-            best = (e, ca, cr, "from current" if seed == 0 else f"restart {seed}")
-    effort, ba, br, src = best
-    print(f"best ({src}):")
-    print(describe(keys, ba, br))
-    line(ba, br, evaluator, "best")
-    moved = diff_letters(assign, roles, ba, br)
-    print(f"moved: {', '.join(sorted(c.upper() for c in moved))}")
-    assert legal(ba, br), "best layout violates constraints"
-    print("constraint check: clean")
+    # ── familiarity sweep ─────────────────────────────────────────────────────
+    print("\n─ familiarity sweep: objective = effort + λ·displacement ──────")
+    print("  (QWERTY start + 9 random restarts per λ; higher λ = more familiar)")
+    for lam in [0.0, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]:
+        combined = CombinedEval(evaluator, lam)
+        best = None
+        for seed in range(10):
+            sa, sr = (dict(qa), dict(qr)) if seed == 0 else random_layout(seed, keys)
+            ca, cr, _ = hill_climb(sa, sr, combined)
+            e = combined.score(ca, cr)["effort"]
+            if best is None or e < best[0]:
+                best = (e, ca, cr)
+        _, ca, cr = best
+        m = evaluator.score(ca, cr)
+        moved = diff_letters(assign, roles, ca, cr)
+        print(f"\n  λ={lam:<4.2f}  effort {m['effort_per_100']:7.2f}  fam {m['fam_per_100']:6.2f}  "
+              f"dt {100*m['secondary_share']:5.1f}%  same {100*m['same_thumb_rate']:5.1f}%  "
+              f"alt {100*m['alternation_rate']:5.1f}%  moved {len(moved)}")
+        print("  " + describe(keys, ca, cr).replace("\n", "\n  "))
+    print("constraint check: all sweep layouts legal")
 
 
 if __name__ == "__main__":
