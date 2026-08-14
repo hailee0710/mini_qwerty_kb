@@ -34,6 +34,8 @@ interface OnKeyActionListener {
     fun onClipboardItem(index: Int)
     /** Remove the clipboard history item at [index]. */
     fun onClipboardDismiss(index: Int)
+    /** Commit the tapped suggestion word — word + trailing space. */
+    fun onSuggestionSelected(word: String)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +93,7 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var keyWidth: Float = 0f
     private var keyHeight: Float = 0f
     private var handleHeightPx: Float = 0f
+    private var suggestionStripHeightPx: Float = 0f
 
     // ── Keyboard height (drag-adjustable, persisted) ──────────────────────
     private var rowHeightDp: Float =
@@ -158,6 +161,9 @@ class MiniKeyboardView(context: Context) : View(context) {
     private val clipboardItemTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
     }
+    private val suggestionTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+    }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
     // ── Corner radius ─────────────────────────────────────────────────────
@@ -205,6 +211,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionTextPaint.color = 0xFFBDC1C6.toInt()
             functionBoldTextPaint.color = 0xFFBDC1C6.toInt()
             clipboardItemTextPaint.color = 0xFFE8EAED.toInt()
+            suggestionTextPaint.color = 0xFFE8EAED.toInt()
             handlePaint.color = 0x66E8EAED.toInt()
         } else {
             bgPaint.color = 0xFFC7CBD2.toInt()
@@ -217,6 +224,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionTextPaint.color = 0xFF616161.toInt()
             functionBoldTextPaint.color = 0xFF616161.toInt()
             clipboardItemTextPaint.color = 0xFF212121.toInt()
+            suggestionTextPaint.color = 0xFF212121.toInt()
             handlePaint.color = 0x66808080.toInt()
         }
     }
@@ -313,6 +321,11 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var clipboardItems: List<String> = emptyList()
     private var clipboardRows: List<List<KeyDef>> = emptyList()
 
+    // Suggestion strip: [left, center, right] words, empty list = hidden.
+    // Exactly 3 entries when visible (empty strings = blank slots).
+    private var suggestions: List<String> = emptyList()
+    private var suggestionDownIndex: Int = -1
+
     /** Fixed close button, pinned to the top-right slot corner — no dedicated row. */
     private val clipboardCloseKey = KeyDef("✕", null, keyType = KeyType.CLIPBOARD_CLOSE)
 
@@ -348,7 +361,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         // The clipboard layer keeps the main keyboard height (letterKeys.size
         // rows) and fits its 5 compact item slots inside it.
         val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) letterKeys.size else keys.size
-        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * rows) * density).toInt()
+        val height = ((HANDLE_HEIGHT_DP + SUGGESTION_STRIP_HEIGHT_DP + rowHeightDp * rows) * density).toInt()
         setMeasuredDimension(width, height)
     }
 
@@ -359,9 +372,10 @@ class MiniKeyboardView(context: Context) : View(context) {
 
         val density = resources.displayMetrics.density
         handleHeightPx = HANDLE_HEIGHT_DP * density
+        suggestionStripHeightPx = SUGGESTION_STRIP_HEIGHT_DP * density
         // Clipboard layer: compact item slots in the main keyboard's height.
         val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS else keys.size
-        keyHeight = (h - handleHeightPx) / rows
+        keyHeight = (h - handleHeightPx - suggestionStripHeightPx) / rows
         keyWidth = w.toFloat() / rows  // rough default for hit padding
 
         // Size text paints proportionally
@@ -372,6 +386,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         functionBoldTextPaint.textSize = keyHeight * 0.30f
         // Clip rows are short — scale text relative to the row, not the key.
         clipboardItemTextPaint.textSize = keyHeight * 0.34f
+        suggestionTextPaint.textSize = suggestionStripHeightPx * 0.36f
 
         layoutKeys()
         clipboardScrollPx = clipboardScrollPx.coerceIn(0f, clipboardMaxScrollPx)
@@ -390,7 +405,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             return
         }
         for ((rowIdx, row) in keys.withIndex()) {
-            val y = handleHeightPx + rowIdx * keyHeight
+            val y = handleHeightPx + suggestionStripHeightPx + rowIdx * keyHeight
             var x = 0f
 
             // Compute total width-units for this row
@@ -425,10 +440,10 @@ class MiniKeyboardView(context: Context) : View(context) {
 
         // Slot height from the layer's own geometry, not keyHeight (which is
         // stale until a size change — see clipboardSlotH declaration).
-        clipboardSlotH = (viewHeight - handleHeightPx) / CLIPBOARD_SLOTS
+        clipboardSlotH = (viewHeight - handleHeightPx - suggestionStripHeightPx) / CLIPBOARD_SLOTS
         clipboardItemTextPaint.textSize = clipboardSlotH * 0.34f
 
-        var y = handleHeightPx - clipboardScrollPx
+        var y = handleHeightPx + suggestionStripHeightPx - clipboardScrollPx
         for (row in clipboardRows) {
             for (key in row) {
                 key.left = 0f
@@ -501,6 +516,14 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
     }
 
+    /** Push the 3-slot suggestion strip contents; empty list hides it. */
+    fun setSuggestions(words: List<String>) {
+        if (suggestions == words) return
+        suggestions = words
+        suggestionDownIndex = -1
+        invalidate()
+    }
+
     /** True when the touch x falls in the per-item dismiss (✕) zone. */
     private fun isInDismissZone(key: KeyDef, x: Float): Boolean {
         val zone = resources.displayMetrics.density * CLIP_DISMISS_ZONE_DP
@@ -524,6 +547,10 @@ class MiniKeyboardView(context: Context) : View(context) {
 
         // Opaque background so the IME window is not transparent.
         canvas.drawRect(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat(), bgPaint)
+
+        if (currentLayer == KeyboardLayer.LETTERS && suggestions.size == 3) {
+            drawSuggestionStrip(canvas)
+        }
 
         for (row in keys) {
             for (key in row) {
@@ -556,6 +583,33 @@ class MiniKeyboardView(context: Context) : View(context) {
             pillH / 2f, pillH / 2f,
             handlePaint
         )
+    }
+
+    /** Three suggestion slots in the band between the handle and the keys. */
+    private fun drawSuggestionStrip(canvas: Canvas) {
+        val slotW = viewWidth / 3f
+        val top = handleHeightPx
+        val bottom = top + suggestionStripHeightPx
+
+        for (i in 0 until 3) {
+            val word = suggestions[i]
+            val l = i * slotW + 2f
+            val rect = RectF(l, top + 2f, l + slotW - 2f, bottom - 2f)
+
+            canvas.drawRoundRect(
+                rect, cornerRadius, cornerRadius,
+                if (suggestionDownIndex == i) keyBgPressedPaint else keyBgPaint
+            )
+            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, keyBorderPaint)
+
+            if (word.isNotEmpty()) {
+                // Clip so long words stay inside their slot.
+                canvas.save()
+                canvas.clipRect(rect)
+                canvas.drawText(word, i * slotW + slotW / 2f, top + suggestionStripHeightPx * 0.62f, suggestionTextPaint)
+                canvas.restore()
+            }
+        }
     }
 
     private fun drawKey(canvas: Canvas, key: KeyDef, pressed: Boolean) {
@@ -598,7 +652,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             // Accent orange (same as the vowel accent) stands out from the
             // grey key background.
             color = vowelTextPaint.color
-            setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000)
+            setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000.toInt())
         }
         canvas.drawCircle(cx, cy, r, fabPaint)
 
@@ -721,6 +775,13 @@ class MiniKeyboardView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                val suggestionIdx = suggestionIndexAt(event.x, event.y)
+                if (suggestionIdx >= 0) {
+                    suggestionDownIndex = suggestionIdx
+                    invalidate()
+                    return true
+                }
+
                 if (event.y < handleHeightPx) {
                     // Drag the handle strip to resize the keyboard.
                     dragActive = true
@@ -770,6 +831,15 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_MOVE -> {
+                if (suggestionDownIndex >= 0) {
+                    // Cancel the slot if the finger leaves it.
+                    if (suggestionIndexAt(event.x, event.y) != suggestionDownIndex) {
+                        suggestionDownIndex = -1
+                    }
+                    invalidate()
+                    return true
+                }
+
                 if (dragActive) {
                     val density = resources.displayMetrics.density
                     // Use the visible row count — the clipboard layer always
@@ -827,6 +897,16 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_UP -> {
+                if (suggestionDownIndex >= 0) {
+                    if (suggestionIndexAt(event.x, event.y) == suggestionDownIndex) {
+                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                        onKeyActionListener?.onSuggestionSelected(suggestions[suggestionDownIndex])
+                    }
+                    suggestionDownIndex = -1
+                    invalidate()
+                    return true
+                }
+
                 if (dragActive) {
                     dragActive = false
                     prefs.edit().putFloat(Prefs.KEY_ROW_HEIGHT_DP, rowHeightDp).apply()
@@ -875,6 +955,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                suggestionDownIndex = -1
                 dragActive = false
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
@@ -930,6 +1011,15 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     // ── Key lookup ────────────────────────────────────────────────────────
 
+    /** Suggestion slot under (x, y), or -1 when the touch misses the strip
+     *  (non-letters layer, empty slot, or outside the band). */
+    private fun suggestionIndexAt(x: Float, y: Float): Int {
+        if (currentLayer != KeyboardLayer.LETTERS || suggestions.size != 3) return -1
+        if (y < handleHeightPx || y > handleHeightPx + suggestionStripHeightPx) return -1
+        val i = (x / (viewWidth / 3f)).toInt().coerceIn(0, 2)
+        return if (suggestions[i].isNotEmpty()) i else -1
+    }
+
     private fun findKeyAt(x: Float, y: Float): KeyDef? {
         // The clipboard close FAB floats above the list — hit it first.
         if (currentLayer == KeyboardLayer.CLIPBOARD) {
@@ -944,7 +1034,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         for (row in keys) {
             for (key in row) {
                 // Off-view keys (scrolled clipboard items) never hit.
-                if (key.bottom <= handleHeightPx || key.top >= viewHeight) continue
+                if (key.bottom <= handleHeightPx + suggestionStripHeightPx || key.top >= viewHeight) continue
                 // Slightly expand hit area for narrow keys
                 val pad = min(keyWidth * 0.05f, 4f)
                 if (x >= key.left - pad && x <= key.right + pad &&
@@ -1026,6 +1116,9 @@ class MiniKeyboardView(context: Context) : View(context) {
         private const val HANDLE_HEIGHT_DP = 14f
         private const val HANDLE_PILL_WIDTH_DP = 40f
         private const val HANDLE_PILL_HEIGHT_DP = 4f
+
+        /** Suggestion strip band between the handle and the key rows. */
+        private const val SUGGESTION_STRIP_HEIGHT_DP = 36f
 
         /** Max chars of a clipboard item shown on the list row (display only;
          *  keeps the label clear of the dismiss button). */
