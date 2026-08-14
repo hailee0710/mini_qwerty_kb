@@ -18,4 +18,7 @@ object Prefs {
     const val ROW_HEIGHT_DEFAULT_DP = 46f
     const val ROW_HEIGHT_MIN_DP = 30f
     const val ROW_HEIGHT_MAX_DP = 75f
+
+    // Learned words (serialized by SuggestionEngine; header + word\tcount lines)
+    const val KEY_USER_WORDS = "user_words"
 }

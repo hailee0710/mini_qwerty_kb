@@ -78,6 +78,15 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         clipboardManager.addPrimaryClipChangedListener(onPrimaryClipChanged)
         getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(onPrefsChanged)
+
+        // Suggestion engine: corpus words, bigrams, and the user's learned
+        // words. Each load fails independently — the strip degrades to the
+        // center word only / no next-word predictions rather than crashing.
+        runCatching { SuggestionEngine.loadWords(assets.open("vi_words.txt")) }
+        runCatching { SuggestionEngine.loadBigrams(assets.open("vi_bigrams.txt")) }
+        val stored = getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+            .getString(Prefs.KEY_USER_WORDS, null)
+        SuggestionEngine.setUserCounts(SuggestionEngine.parseUserCounts(stored))
     }
 
     override fun onDestroy() {
@@ -104,6 +113,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         // Reset composing state when switching input targets
         commitPending()
         rawBuffer.clear()
+        lastCommittedWord = ""
+        keyboardView.setSuggestions(emptyList())
         keyboardView.shiftActive = false
         updateComposingText()
     }
@@ -116,6 +127,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         super.onFinishInputView(finishingInput)
         commitPending()
         rawBuffer.clear()
+        keyboardView.setSuggestions(emptyList())
+        persistLearningNow()
     }
 
     override fun onStartInput(info: EditorInfo, restarting: Boolean) {
@@ -200,6 +213,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
             val resolved = TelexProcessor.resolve(rawBuffer.toString())
             ic.commitText(resolved + " ", 1)
             rawBuffer.clear()
+            recordCommittedWord(resolved)
         } else {
             ic.commitText(" ", 1)
         }
@@ -288,6 +302,20 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         keyboardView.updateClipboardItems(clipboardHistory)
     }
 
+    override fun onSuggestionSelected(word: String) {
+        if (word.isEmpty()) return
+        val ic = currentInputConnection ?: return
+        // Explicit user action — commit unconditionally, mirroring onSpace().
+        // The buffer may be empty here (next-word mode); the editor may or
+        // may not hold a composing region — commitText with newCursorPosition
+        // 1 inserts at the caret either way.
+        ic.commitText(word + " ", 1)
+        ic.setComposingText("", 0)
+        rawBuffer.clear()
+        recordCommittedWord(word)
+        updateComposingText()
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Hard-key fallback
     // ─────────────────────────────────────────────────────────────────────
@@ -362,6 +390,40 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Suggestion learning
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Last word committed to the editor — the anchor for next-word mode. */
+    private var lastCommittedWord: String = ""
+
+    private var learningDirty: Boolean = false
+    private var learningPersistScheduled: Boolean = false
+
+    /** Count one committed word: feed the engine, set the next-word anchor,
+     *  and schedule a throttled prefs write. */
+    private fun recordCommittedWord(word: String) {
+        val clean = word.lowercase()
+        if (!clean.any { it.isLetter() }) return
+        SuggestionEngine.addUserWord(clean)
+        lastCommittedWord = clean
+        learningDirty = true
+        if (learningPersistScheduled) return
+        learningPersistScheduled = true
+        keyboardView.postDelayed({
+            learningPersistScheduled = false
+            persistLearningNow()
+        }, LEARNING_PERSIST_DELAY_MS)
+    }
+
+    private fun persistLearningNow() {
+        if (!learningDirty) return
+        learningDirty = false
+        val serialized = SuggestionEngine.serializeUserCounts(SuggestionEngine.userCountsSnapshot())
+        getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+            .edit().putString(Prefs.KEY_USER_WORDS, serialized).apply()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────
 
@@ -374,10 +436,34 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         if (rawBuffer.isEmpty()) {
             // Clear any stale composing span
             ic.setComposingText("", 0)
+            pushNextWordSuggestions()
             return
         }
         val resolved = TelexProcessor.resolve(rawBuffer.toString())
         ic.setComposingText(resolved, 1)
+        pushComposingSuggestions(resolved)
+    }
+
+    /** Composing mode: center = resolved word, flanks = top-2 prefix matches. */
+    private fun pushComposingSuggestions(resolved: String) {
+        val flanks = SuggestionEngine.suggestions(resolved, max = 2)
+        keyboardView.setSuggestions(
+            listOf(flanks.getOrNull(0).orEmpty(), resolved, flanks.getOrNull(1).orEmpty())
+        )
+    }
+
+    /** Next-word mode: all 3 slots are bigram predictions for the last word. */
+    private fun pushNextWordSuggestions() {
+        val predictions = SuggestionEngine.nextWords(lastCommittedWord, max = 3)
+        if (predictions.isEmpty()) {
+            keyboardView.setSuggestions(emptyList())
+            return
+        }
+        keyboardView.setSuggestions(listOf(
+            predictions.getOrNull(0).orEmpty(),
+            predictions.getOrNull(1).orEmpty(),
+            predictions.getOrNull(2).orEmpty(),
+        ))
     }
 
     /**
@@ -392,9 +478,11 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         val resolved = TelexProcessor.resolve(rawBuffer.toString())
         if (resolved.isNotEmpty()) {
             ic.commitText(resolved, 1)
+            recordCommittedWord(resolved)
         }
         ic.setComposingText("", 0)
         rawBuffer.clear()
+        pushNextWordSuggestions()
     }
 
     /**
@@ -440,5 +528,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
 
         /** Label used for ClipData created when re-copying an item. */
         private const val CLIP_LABEL = "clipboard"
+
+        /** Learned words persist at most once per this delay (plus on finish). */
+        private const val LEARNING_PERSIST_DELAY_MS = 10_000L
     }
 }
