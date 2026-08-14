@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Android custom keyboard (IME) with a compact 3-row QWERTY layout and a built-in Vietnamese Telex input engine. Beyond the keyboard itself there is one settings screen (theme mode + keyboard height), which is also the app's launcher entry point. minSdk 21, compileSdk/targetSdk 34, JDK 17.
+Android custom keyboard (IME) with a compact 3-row QWERTY layout and a built-in Vietnamese Telex input engine. Beyond the keyboard itself there is one settings screen (theme mode), which is also the app's launcher entry point. minSdk 21, compileSdk/targetSdk 34, JDK 17.
 
 Toolchain pins: AGP 8.2.2, Kotlin 1.9.22, Gradle 8.5. Only external dependency is `androidx.core:core-ktx`.
 
@@ -27,12 +27,12 @@ Source files, each with one clear job:
 - `app/src/main/java/com/miniqwerty/kb/MiniKeyboardIME.kt` — `InputMethodService` subclass. Owns the composing buffer and all interaction with the target app via `InputConnection`.
 - `app/src/main/java/com/miniqwerty/kb/MiniKeyboardView.kt` — custom `View` that draws the keyboard on a `Canvas` and handles touch. Emits events through the `OnKeyActionListener` interface (defined in this file). No Android XML layouts — everything is drawn.
 - `app/src/main/java/com/miniqwerty/kb/TelexProcessor.kt` — stateless `object`; pure text transformation, no Android dependencies. Unit-testable without instrumentation.
-- `app/src/main/java/com/miniqwerty/kb/MainActivity.kt` — settings screen (plain `Activity`, no AppCompat): theme mode radio group, height seek bar, "enable keyboard" shortcut to `Settings.ACTION_INPUT_METHOD_SETTINGS`. Also the launcher entry point.
+- `app/src/main/java/com/miniqwerty/kb/MainActivity.kt` — settings screen (plain `Activity`, no AppCompat): theme mode radio group, "enable keyboard" shortcut to `Settings.ACTION_INPUT_METHOD_SETTINGS`. Also the launcher entry point.
 - `app/src/main/java/com/miniqwerty/kb/Prefs.kt` — shared preference keys, defaults, and constants shared by the IME and the settings screen (`miniqwerty_kb_prefs`).
 
 ### Composing flow
 
-The IME keeps a raw character buffer (`rawBuffer`) for the current word. Every keystroke appends to it and calls `TelexProcessor.resolve()` on the **entire buffer** (the processor is stateless and re-resolves from scratch each time), then shows the result via `InputConnection.setComposingText()`. The resolved text is only committed on space/return/`shouldCommit` punctuation (`. , ! ? : ; …` plus whitespace), or when the input session ends (`onFinishInputView` commits pending text). Backspace removes the last raw character from the buffer rather than deleting from the editor; only when the buffer is empty does it delegate to `deleteSurroundingText`. `onReplaceCharacter` pops the last raw char and re-appends its replacement (double-tap); `onDirectCharacter` commits pending text and inserts the character directly (numeric layer).
+The IME keeps a raw character buffer (`rawBuffer`) for the current word. Every keystroke appends to it and calls `TelexProcessor.resolve()` on the **entire buffer** (the processor is stateless and re-resolves from scratch each time), then shows the result via `InputConnection.setComposingText()`. The resolved text is committed on space/return/`shouldCommit` punctuation (`. , ! ? : ; …` plus whitespace) and on explicit user actions (`onCursorMove`, numeric-layer `onDirectCharacter`) via `commitBuffer`, which commits unconditionally — editors that fail to report composing partial offsets must not lose the visible word. Only lifecycle commits (`onStartInputView`/`onFinishInputView`) are conditional on the editor still holding a composing region (`editorHasComposingRegion` probes `ExtractedText` partial offsets): if an app cleared the field while composing (e.g. chat send button), the stale buffer is dropped instead of re-inserted. Space-bar long-press is a cursor mode: horizontal drag moves the caret via `onCursorMove` (commits pending word first). Backspace removes the last raw character from the buffer rather than deleting from the editor; only when the buffer is empty does it delegate to `deleteSurroundingText`. `onReplaceCharacter` pops the last raw char and re-appends its replacement (double-tap); `onDirectCharacter` commits pending text and inserts the character directly (numeric layer).
 
 Shift is latched (one character), not held: `MiniKeyboardView` uppercases the character before calling `onCharacter`, then auto-releases.
 
@@ -50,7 +50,7 @@ Defined as `List<List<KeyDef>>` literals in `MiniKeyboardView` — `letterKeys` 
 
 Letters layer, 3 rows. Row 1 is 10 columns — `X(Q) W E R T H(Y) U I(P) O ,(.)` — comma on top, dot below it. Row 2 is 9 columns: `A S(Z) D F(C) G(V) N(B) J(K) M(L) ⌫`. The layout is QWERTY-familiar by design: `tools/layout_analyzer.py` optimizes effort + λ·displacement from each letter's QWERTY home (λ=0.5), so every key sits at or next to its QWERTY position and the 9 rarest letters (Q Y P Z C V B K L) become double-tap secondaries on the key nearest their QWERTY home. Tone keys X, S, F, R, J sit where Vietnamese Telex typists expect them. A, E, O, D sit on keys without secondaries so the Telex same-key digraphs `aa ee oo dd` stay typeable via quick double-press. Row 3 uses fractional `widthUnits` spans (shift 1.5, `123` 1, space 5, return 1.5). `123` switches to the numeric layer; `ABC` switches back.
 
-Numeric layer: rows 1–2 are 11 columns so the shift-symbols row aligns under the digits — row 1 is `1 2 3 4 5 6 7 8 9 0 -`, row 2 is `~ ! @ # $ % ^ & * ( ) _`. Row 3 spans `ABC` (1), space (4), `.` (1), `⏎` (1). Numeric-layer characters commit directly via `onDirectCharacter` (bypass the Telex buffer).
+Numeric layer: rows 1–2 are 11 columns so the shift-symbols row aligns under the digits — row 1 is `1 2 3 4 5 6 7 8 9 0 -`, row 2 is `~ ! @ # $ % ^ & * ( ) _`. Row 3 spans `ABC` (1.5), space (7), `.` (1), `⏎` (1.5) — 11 total units so the dot matches the symbol-key width above. Numeric-layer characters commit directly via `onDirectCharacter` (bypass the Telex buffer).
 
 ### Theme and sizing
 

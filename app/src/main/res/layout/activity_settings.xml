@@ -46,33 +46,6 @@
             android:text="@string/theme_dark" />
     </RadioGroup>
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:text="@string/height_title"
-        android:textSize="16sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/height_value"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="14sp" />
-
-    <SeekBar
-        android:id="@+id/height_seek"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="@string/height_hint"
-        android:textSize="13sp" />
-
     <Button
         android:id="@+id/enable_button"
         android:layout_width="wrap_content"
