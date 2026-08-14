@@ -252,8 +252,13 @@ object TelexProcessor {
         // Rule 2: triphthong
         if (positions.size >= 3) return positions[positions.size - 2]
 
-        // Rule 3: starts with o/u
-        if (first == 'o' || first == 'u') return positions[1]
+        // Rule 3: o/u-leading diphthong whose second vowel carries the tone
+        // (oa, oe, ua, uê, uy, uơ). Excludes oi/ui/uo — those are
+        // ending diphthongs handled by Rule 4 (tone on first vowel).
+        val second = word[positions[1]].lowercaseChar()
+        if ((first == 'o' || first == 'u') && second in setOf('a', 'e', 'ê', 'y', 'ơ')) {
+            return positions[1]
+        }
 
         // Rule 4: ends with i / y / u / o
         if (last == 'i' || last == 'y' || last == 'u' || last == 'o') return positions[0]
