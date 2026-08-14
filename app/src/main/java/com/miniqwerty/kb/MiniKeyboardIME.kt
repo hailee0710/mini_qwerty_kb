@@ -4,6 +4,7 @@ import android.inputmethodservice.InputMethodService
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 
 /**
@@ -88,10 +89,10 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         val ic = currentInputConnection ?: return
 
         if (TelexProcessor.shouldCommit(char)) {
-            // Commit current word and reset
-            commitPending()
+            // Commit current word and reset. Explicit user action — commit
+            // unconditionally (see commitBuffer()).
+            commitBuffer(ic)
             ic.commitText(char.toString(), 1)
-            rawBuffer.clear()
             updateComposingText()
             return
         }
@@ -112,10 +113,10 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
 
     override fun onDirectCharacter(char: Char) {
         // Numeric layer: commit the pending word, then insert the character
-        // without passing it through the Telex buffer.
+        // without passing it through the Telex buffer. Explicit user action —
+        // commit unconditionally (see commitBuffer()).
         val ic = currentInputConnection ?: return
-        commitPending()
-        rawBuffer.clear()
+        commitBuffer(ic)
         ic.commitText(char.toString(), 1)
     }
 
@@ -157,8 +158,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
 
     override fun onReturn() {
         val ic = currentInputConnection ?: return
-        commitPending()
-        rawBuffer.clear()
+        commitBuffer(ic)
 
         // Dispatch the Enter key action as configured by the target editor
         val actionId = editorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)
@@ -170,6 +170,26 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
             ic.commitText("\n", 1)
         }
         updateComposingText()
+    }
+
+    override fun onCursorMove(delta: Int) {
+        val ic = currentInputConnection ?: return
+
+        // A pending Telex word would break the buffer's assumption about the
+        // surrounding text once the cursor moves — commit it first. Explicit
+        // user action, so commit unconditionally (see commitBuffer()).
+        if (rawBuffer.isNotEmpty()) {
+            commitBuffer(ic)
+        }
+
+        // Probe the cursor position: setSelection takes absolute offsets, so
+        // measure how much text lies on each side of the caret.
+        val before = ic.getTextBeforeCursor(CURSOR_PROBE_LEN, 0) ?: return
+        val after = ic.getTextAfterCursor(CURSOR_PROBE_LEN, 0)
+        val cursor = before.length
+        val end = cursor + (after?.length ?: 0)
+        val target = (cursor + delta).coerceIn(0, end)
+        ic.setSelection(target, target)
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -221,14 +241,54 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     }
 
     /**
-     * Commits any pending composing text to the target editor and resets state.
+     * Commits the resolved raw buffer unconditionally and clears state.
+     *
+     * Used for explicit user actions (enter, cursor move). Unlike
+     * [commitPending], it does not gate on the editor's composing-region
+     * probe: editors that fail to report partial offsets would otherwise
+     * have the visible composing word silently wiped.
      */
-    private fun commitPending() {
-        val ic = currentInputConnection ?: return
+    private fun commitBuffer(ic: InputConnection) {
         val resolved = TelexProcessor.resolve(rawBuffer.toString())
         if (resolved.isNotEmpty()) {
             ic.commitText(resolved, 1)
         }
         ic.setComposingText("", 0)
+        rawBuffer.clear()
+    }
+
+    /**
+     * Commits any pending composing text to the target editor and resets state.
+     *
+     * The commit is conditional on the editor still holding a composing region:
+     * if it is gone (e.g. a chat app cleared the field while we were composing),
+     * the buffer is stale and re-inserting it would resurrect deleted text.
+     */
+    private fun commitPending() {
+        val ic = currentInputConnection ?: return
+        val resolved = TelexProcessor.resolve(rawBuffer.toString())
+        if (resolved.isNotEmpty() && editorHasComposingRegion()) {
+            ic.commitText(resolved, 1)
+        }
+        ic.setComposingText("", 0)
+    }
+
+    /**
+     * True if the editor reports an active composing region
+     * (partialStartOffset < partialEndOffset). Editors without composing
+     * support return null extracted text — treat as "commit" (legacy behavior,
+     * their text was already inserted by setComposingText falling back to
+     * commitText).
+     */
+    private fun editorHasComposingRegion(): Boolean {
+        val ic = currentInputConnection ?: return true
+        val req = ExtractedTextRequest().apply { hintMaxChars = 0; hintMaxLines = 1 }
+        val et = ic.getExtractedText(req, 0) ?: return true
+        return et.partialStartOffset >= 0 && et.partialEndOffset > et.partialStartOffset
+    }
+
+    companion object {
+        /** Max chars probed around the caret to locate the cursor position. */
+        private const val CURSOR_PROBE_LEN = 5000
     }
 }
