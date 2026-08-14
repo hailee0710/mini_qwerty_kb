@@ -26,6 +26,8 @@ interface OnKeyActionListener {
     fun onNumeric()
     fun onSpace()
     fun onReturn()
+    /** Move the cursor by [delta] characters (negative = left). Space-bar cursor mode. */
+    fun onCursorMove(delta: Int)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +102,12 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var isSwipeDetected: Boolean = false
     private var longPressTriggered: Boolean = false
     private val touchSlop: Int = ViewConfiguration.get(context).scaledTouchSlop
+
+    // Space-bar cursor mode: after long-pressing space, horizontal drag moves
+    // the text cursor. cursorPxPerChar maps finger dx to character steps.
+    private var spaceCursorMode: Boolean = false
+    private var lastCursorChars: Int = 0
+    private var cursorPxPerChar: Float = 40f
 
     private val longPressHandler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
@@ -269,12 +277,13 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("/", "?"),
             KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
-        // Row 3 — control row, "," below "." on the right of the space
+        // Row 3 — control row, "," below "." on the right of the space.
+        // 11 total units so the dot matches the symbol-key width in rows 1–2.
         listOf(
-            KeyDef("ABC", null, widthUnits = 1f, keyType = KeyType.ABC),
-            KeyDef(" ", null, widthUnits = 4f, keyType = KeyType.SPACE),
+            KeyDef("ABC", null, widthUnits = 1.5f, keyType = KeyType.ABC),
+            KeyDef(" ", null, widthUnits = 7f, keyType = KeyType.SPACE),
             KeyDef(".", ","),
-            KeyDef("⏎", null, widthUnits = 1f, keyType = KeyType.RETURN),
+            KeyDef("⏎", null, widthUnits = 1.5f, keyType = KeyType.RETURN),
         ),
     )
 
@@ -314,6 +323,12 @@ class MiniKeyboardView(context: Context) : View(context) {
         functionTextPaint.textSize = keyHeight * 0.24f
 
         layoutKeys()
+
+        // Cursor mode granularity: a quarter of a letter-column width per
+        // character — smaller step per char makes the cursor move faster
+        // for the same horizontal finger travel.
+        val aKey = letterKeys[1][0]
+        cursorPxPerChar = (aKey.right - aKey.left) * 0.25f
     }
 
     /** Assign pixel bounds to every key based on column spans. */
@@ -404,9 +419,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         val primaryPaint = if (key.isVowel) vowelTextPaint else primaryTextPaint
         val kw = key.right - key.left
 
-        // Primary (top-left quadrant)
+        // Primary (top-left quadrant). Labels are lowercase by default and
+        // follow the shift latch; the KeyDef literals themselves stay uppercase.
         canvas.drawText(
-            resolveCase(key.primary),
+            resolveCase(key.primary.lowercase()),
             cx - kw * 0.22f,
             cy - keyHeight * 0.12f,
             primaryPaint
@@ -415,7 +431,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         // Secondary (bottom-right quadrant) — only if present
         if (key.secondary != null) {
             canvas.drawText(
-                resolveCase(key.secondary),
+                resolveCase(key.secondary.lowercase()),
                 cx + kw * 0.22f,
                 cy + keyHeight * 0.22f,
                 secondaryTextPaint
@@ -489,6 +505,8 @@ class MiniKeyboardView(context: Context) : View(context) {
                 downY = event.y
                 isSwipeDetected = false
                 longPressTriggered = false
+                spaceCursorMode = false
+                lastCursorChars = 0
 
                 if (downKey?.keyType == KeyType.BACKSPACE) {
                     // Hold-to-repeat instead of long-press secondary.
@@ -499,8 +517,15 @@ class MiniKeyboardView(context: Context) : View(context) {
                             longPressTriggered = true
                             performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
                             lastTapKey = null
-                            commitSecondary(downKey!!, replace = false)
-                            downKey = null
+                            if (downKey?.keyType == KeyType.SPACE) {
+                                // Long-press space enters cursor mode; the key
+                                // stays pressed and drags move the cursor.
+                                spaceCursorMode = true
+                                lastCursorChars = 0
+                            } else {
+                                commitSecondary(downKey!!, replace = false)
+                                downKey = null
+                            }
                             invalidate()
                         }
                     }
@@ -517,6 +542,21 @@ class MiniKeyboardView(context: Context) : View(context) {
                     rowHeightDp = (dragStartRowDp + rowDelta)
                         .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
                     requestLayout()
+                    return true
+                }
+
+                if (spaceCursorMode) {
+                    // Cursor mode: horizontal finger position maps to a cursor
+                    // offset from the touch-down point, one step per
+                    // cursorPxPerChar. Emit only the delta since last step.
+                    val dx = event.x - downX
+                    val chars = Math.round(dx / cursorPxPerChar)
+                    if (chars != lastCursorChars) {
+                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                        onKeyActionListener?.onCursorMove(chars - lastCursorChars)
+                        lastCursorChars = chars
+                    }
+                    invalidate()
                     return true
                 }
 
@@ -561,6 +601,8 @@ class MiniKeyboardView(context: Context) : View(context) {
                 }
 
                 backspaceRepeatActive = false
+                spaceCursorMode = false
+                lastCursorChars = 0
                 downKey = null
                 invalidate()
                 return true
@@ -571,6 +613,8 @@ class MiniKeyboardView(context: Context) : View(context) {
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
                 backspaceRepeatActive = false
+                spaceCursorMode = false
+                lastCursorChars = 0
                 downKey = null
                 invalidate()
                 return true
