@@ -18,4 +18,16 @@ object Prefs {
     const val ROW_HEIGHT_DEFAULT_DP = 46f
     const val ROW_HEIGHT_MIN_DP = 30f
     const val ROW_HEIGHT_MAX_DP = 75f
+
+    // Haptic feedback (vibrate on key press)
+    const val KEY_HAPTIC_ENABLED = "haptic_enabled"
+    // Key press popup (bubble showing the typed character)
+    const val KEY_KEY_POPUP_ENABLED = "key_popup_enabled"
+    // Smart Telex: English-aware syllable validation + dictionary check at commit
+    const val KEY_SMART_TELEX_ENABLED = "smart_telex_enabled"
+    // Quick double-tap window, in ms
+    const val KEY_DOUBLE_TAP_MS = "double_tap_ms"
+    const val DOUBLE_TAP_DEFAULT_MS = 200L
+    const val DOUBLE_TAP_MIN_MS = 100L
+    const val DOUBLE_TAP_MAX_MS = 500L
 }

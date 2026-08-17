@@ -6,6 +6,7 @@ import android.graphics.*
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -21,6 +22,8 @@ interface OnKeyActionListener {
     fun onReplaceCharacter(char: Char)
     /** Commit a character directly, bypassing the Telex buffer (numeric layer). */
     fun onDirectCharacter(char: Char)
+    /** Replace the last directly-committed character (numeric-layer double-tap). */
+    fun onReplaceDirectCharacter(char: Char)
     fun onBackspace()
     fun onShift()
     fun onNumeric()
@@ -81,6 +84,11 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     // ── Persisted preferences ────────────────────────────────────────────
     private val prefs = context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+
+    // ── Behavior toggles (re-read in refreshTheme) ───────────────────────
+    private var hapticEnabled: Boolean = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
+    private var popupEnabled: Boolean = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
+    private var doubleTapMs: Long = prefs.getLong(Prefs.KEY_DOUBLE_TAP_MS, Prefs.DOUBLE_TAP_DEFAULT_MS)
 
     // ── Theme state ───────────────────────────────────────────────────────
     private var darkTheme: Boolean = resolveDarkTheme()
@@ -159,6 +167,11 @@ class MiniKeyboardView(context: Context) : View(context) {
         textAlign = Paint.Align.LEFT
     }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val popupBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val popupTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        isFakeBoldText = true
+    }
 
     // ── Corner radius ─────────────────────────────────────────────────────
     private val cornerRadius = 6f
@@ -184,8 +197,12 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
 
     /** Re-read the theme preference and recolor. Called on init, when the keyboard
-     *  window is shown, and on configuration change. */
+     *  window is shown, and on configuration change. Also re-reads the behavior
+     *  toggles so settings changes land on the open keyboard. */
     fun refreshTheme() {
+        hapticEnabled = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
+        popupEnabled = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
+        doubleTapMs = prefs.getLong(Prefs.KEY_DOUBLE_TAP_MS, Prefs.DOUBLE_TAP_DEFAULT_MS)
         val dark = resolveDarkTheme()
         if (darkTheme == dark) return
         darkTheme = dark
@@ -206,6 +223,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionBoldTextPaint.color = 0xFFBDC1C6.toInt()
             clipboardItemTextPaint.color = 0xFFE8EAED.toInt()
             handlePaint.color = 0x66E8EAED.toInt()
+            popupBgPaint.color = 0xFFE8EAED.toInt()
+            popupTextPaint.color = 0xFF202124.toInt()
         } else {
             bgPaint.color = 0xFFC7CBD2.toInt()
             keyBgPaint.color = 0xFFE0E0E0.toInt()
@@ -218,6 +237,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionBoldTextPaint.color = 0xFF616161.toInt()
             clipboardItemTextPaint.color = 0xFF212121.toInt()
             handlePaint.color = 0x66808080.toInt()
+            popupBgPaint.color = 0xFF3C4043.toInt()
+            popupTextPaint.color = 0xFFFFFFFF.toInt()
         }
     }
 
@@ -236,7 +257,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         // Row 1 — "," at the right end, "." below it
         listOf(
             KeyDef("X", "Q"),
-            KeyDef("W", null),
+            KeyDef("W", "?"),
             KeyDef("E", null, isVowel = true),
             KeyDef("R", null),
             KeyDef("T", null),
@@ -246,7 +267,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("O", null, isVowel = true),
             KeyDef(",", "."),
         ),
-        // Row 2 — backspace at the end
+        // Row 2 — backspace at the end, narrower than the letters grid so
+        // the row centers with a small margin (see layoutKeys())
         listOf(
             KeyDef("A", null, isVowel = true),
             KeyDef("S", "Z"),
@@ -256,7 +278,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             KeyDef("N", "B"),
             KeyDef("J", "K"),
             KeyDef("M", "L"),
-            KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
+            KeyDef("⌫", null, widthUnits = 1.5f, keyType = KeyType.BACKSPACE),
         ),
         // Row 3 — control row with variable-width spans
         listOf(
@@ -346,9 +368,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
         val density = resources.displayMetrics.density
         // The clipboard layer keeps the main keyboard height (letterKeys.size
-        // rows) and fits its 5 compact item slots inside it.
+        // rows) and fits its 5 compact item slots inside it. Row 3 is 75% of
+        // the standard row height, so the total is (rows - 1) + 0.75 rows.
         val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) letterKeys.size else keys.size
-        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * rows) * density).toInt()
+        val height = ((HANDLE_HEIGHT_DP + rowHeightDp * effectiveRows(rows)) * density).toInt()
         setMeasuredDimension(width, height)
     }
 
@@ -360,7 +383,8 @@ class MiniKeyboardView(context: Context) : View(context) {
         val density = resources.displayMetrics.density
         handleHeightPx = HANDLE_HEIGHT_DP * density
         // Clipboard layer: compact item slots in the main keyboard's height.
-        val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS else keys.size
+        val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS.toFloat()
+                   else effectiveRows(keys.size)
         keyHeight = (h - handleHeightPx) / rows
         keyWidth = w.toFloat() / rows  // rough default for hit padding
 
@@ -370,6 +394,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         secondaryTextPaint.textSize = keyHeight * 0.20f
         functionTextPaint.textSize = keyHeight * 0.24f
         functionBoldTextPaint.textSize = keyHeight * 0.30f
+        popupTextPaint.textSize = keyHeight * 0.5f
         // Clip rows are short — scale text relative to the row, not the key.
         clipboardItemTextPaint.textSize = keyHeight * 0.34f
 
@@ -383,6 +408,9 @@ class MiniKeyboardView(context: Context) : View(context) {
         cursorPxPerChar = (aKey.right - aKey.left) * 0.25f
     }
 
+    /** Total row-height units: every row is 1 unit, the last row is 75%. */
+    private fun effectiveRows(rowCount: Int): Float = (rowCount - 1) + ROW3_HEIGHT_RATIO
+
     /** Assign pixel bounds to every key based on column spans. */
     private fun layoutKeys() {
         if (currentLayer == KeyboardLayer.CLIPBOARD) {
@@ -390,19 +418,28 @@ class MiniKeyboardView(context: Context) : View(context) {
             return
         }
         for ((rowIdx, row) in keys.withIndex()) {
+            // The last row (control row) is 75% of the standard row height.
+            val rowH = if (rowIdx == keys.lastIndex) keyHeight * ROW3_HEIGHT_RATIO else keyHeight
             val y = handleHeightPx + rowIdx * keyHeight
-            var x = 0f
 
             // Compute total width-units for this row
             val totalUnits = row.sumOf { it.widthUnits.toDouble() }.toFloat()
-            val unitWidth = viewWidth / totalUnits
+
+            // The letters-layer middle row pins to row 1's 10-unit grid and
+            // centers itself: letters keep row 1's exact width, the narrower
+            // backspace leaves a small margin on each side, and the slight
+            // offset against row 1 gives a natural staggered typing feel.
+            val isMiddleLetterRow = currentLayer == KeyboardLayer.LETTERS && rowIdx == 1
+            val unitWidth = if (isMiddleLetterRow) viewWidth / 10f else viewWidth / totalUnits
+            val rowWidth = if (isMiddleLetterRow) unitWidth * totalUnits else viewWidth.toFloat()
+            var x = (viewWidth - rowWidth) / 2f
 
             for (key in row) {
                 val w = key.widthUnits * unitWidth
                 key.left = x
                 key.top = y
                 key.right = x + w
-                key.bottom = y + keyHeight
+                key.bottom = y + rowH
                 x += w
             }
         }
@@ -531,6 +568,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
         }
 
+        drawKeyPopup(canvas)
+
         if (currentLayer == KeyboardLayer.CLIPBOARD) {
             // Close FAB floats above the list, and the empty state is a plain
             // centered hint — the layer itself is otherwise blank.
@@ -598,7 +637,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             // Accent orange (same as the vowel accent) stands out from the
             // grey key background.
             color = vowelTextPaint.color
-            setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000)
+            setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000.toInt())
         }
         canvas.drawCircle(cx, cy, r, fabPaint)
 
@@ -668,6 +707,50 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
     }
 
+    /** Key-press popup: bubble with the typed character near the pressed key.
+     *  Drawn above the key (below when there is no room, e.g. row 1), while
+     *  [downKey] is held. Character keys only. */
+    private fun drawKeyPopup(canvas: Canvas) {
+        val key = downKey ?: return
+        if (!popupEnabled || key.keyType != KeyType.CHARACTER) return
+        val density = resources.displayMetrics.density
+        val bubbleH = keyHeight * 0.85f
+        val bubbleW = maxOf(keyWidth * 1.1f, bubbleH * 1.5f)
+        val cx = key.left + (key.right - key.left) / 2f
+        val margin = 6f * density
+
+        var top = key.top - margin - bubbleH          // prefer above
+        val below = top < handleHeightPx + 2f * density
+        if (below) top = key.bottom + margin          // row 1: not enough room
+        top = top.coerceAtMost(viewHeight - bubbleH - margin)
+
+        val left = maxOf(4f * density, cx - bubbleW / 2f)
+        val right = minOf(viewWidth - 4f * density, cx + bubbleW / 2f)
+        if (right <= left) return
+
+        val rect = RectF(left, top, right, top + bubbleH)
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, popupBgPaint)
+
+        // Pointer tail toward the key
+        val tail = 7f * density
+        val tailPath = Path()
+        if (below) {
+            tailPath.moveTo(cx - 5f * density, top + 1f)
+            tailPath.lineTo(cx + 5f * density, top + 1f)
+            tailPath.lineTo(cx, top - tail)
+        } else {
+            tailPath.moveTo(cx - 5f * density, rect.bottom - 1f)
+            tailPath.lineTo(cx + 5f * density, rect.bottom - 1f)
+            tailPath.lineTo(cx, rect.bottom + tail)
+        }
+        tailPath.close()
+        canvas.drawPath(tailPath, popupBgPaint)
+
+        val label = resolveCase(key.primary.lowercase())
+        val baseline = rect.centerY() + popupTextPaint.textSize * 0.35f
+        canvas.drawText(label, cx, baseline, popupTextPaint)
+    }
+
     private fun drawFunctionKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
         val text = when (key.keyType) {
             KeyType.SHIFT     -> "⇧"
@@ -697,13 +780,12 @@ class MiniKeyboardView(context: Context) : View(context) {
             } else {
                 functionTextPaint
             }
-            canvas.drawText(text, cx, cy + keyHeight * 0.1f, paint)
+            // Per-key height keeps labels centered on the shorter row 3.
+            val rowH = key.bottom - key.top
+            canvas.drawText(text, cx, cy + rowH * 0.1f, paint)
         }
 
-        // Space bar label, styled like a regular letter key.
-        if (key.keyType == KeyType.SPACE) {
-            canvas.drawText("space", cx, cy + keyHeight * 0.1f, primaryTextPaint)
-        }
+        // Space bar is deliberately unlabeled — a wide blank key.
     }
 
     /** Apply shift state: uppercase the first char of [s]. */
@@ -749,7 +831,7 @@ class MiniKeyboardView(context: Context) : View(context) {
                     longPressRunnable = Runnable {
                         if (downKey != null && !isSwipeDetected && !longPressTriggered) {
                             longPressTriggered = true
-                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            haptic(HapticFeedbackConstants.LONG_PRESS)
                             lastTapKey = null
                             if (downKey?.keyType == KeyType.SPACE) {
                                 // Long-press space enters cursor mode; the key
@@ -774,7 +856,8 @@ class MiniKeyboardView(context: Context) : View(context) {
                     val density = resources.displayMetrics.density
                     // Use the visible row count — the clipboard layer always
                     // shows its 5 compact slots even when the list is longer.
-                    val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS else keys.size
+                    val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS.toFloat()
+                               else effectiveRows(keys.size)
                     val rowDelta = (dragStartY - event.y) / density / rows
                     rowHeightDp = (dragStartRowDp + rowDelta)
                         .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
@@ -789,7 +872,7 @@ class MiniKeyboardView(context: Context) : View(context) {
                     val dx = event.x - downX
                     val chars = Math.round(dx / cursorPxPerChar)
                     if (chars != lastCursorChars) {
-                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
                         onKeyActionListener?.onCursorMove(chars - lastCursorChars)
                         lastCursorChars = chars
                     }
@@ -842,18 +925,18 @@ class MiniKeyboardView(context: Context) : View(context) {
                     if (key.keyType == KeyType.BACKSPACE) {
                         // Released before the repeat kicked in → single delete.
                         if (!backspaceRepeatActive) {
-                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
                             onKeyActionListener?.onBackspace()
                         }
                     } else if (isSwipeDetected) {
-                        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
                         lastTapKey = null
                         commitSecondary(key, replace = false)
                     } else if (key.keyType == KeyType.CLIPBOARD_ITEM) {
                         if (clipboardScrollActive) {
                             // Scroll gesture, not a tap — keep the position.
                         } else {
-                            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+                            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
                             if (isInDismissZone(key, event.x)) {
                                 onKeyActionListener?.onClipboardDismiss(key.index)
                             } else {
@@ -890,18 +973,24 @@ class MiniKeyboardView(context: Context) : View(context) {
         return super.onTouchEvent(event)
     }
 
+    /** Vibration on key press, gated by the user toggle. */
+    private fun haptic(feedback: Int) {
+        if (hapticEnabled) performHapticFeedback(feedback)
+    }
+
     /**
      * Quick tap. First tap emits the top (primary) character; a second tap on
-     * the same key within [DOUBLE_TAP_MS] replaces it with the bottom
+     * the same key within [doubleTapMs] replaces it with the bottom
      * (secondary) character.
      */
     private fun handleQuickTap(key: KeyDef) {
-        performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
+        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
 
         val now = SystemClock.uptimeMillis()
-        val isDoubleTap = currentLayer == KeyboardLayer.LETTERS &&
+        val isDoubleTap = (currentLayer == KeyboardLayer.LETTERS ||
+            currentLayer == KeyboardLayer.NUMERIC) &&
             key.secondary != null &&
-            key === lastTapKey && now - lastTapTime <= DOUBLE_TAP_MS
+            key === lastTapKey && now - lastTapTime <= doubleTapMs
 
         if (isDoubleTap) {
             commitSecondary(key, replace = true)
@@ -1003,7 +1092,13 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
             if (shiftActive) shiftActive = false
             if (replace) {
-                listener.onReplaceCharacter(ch)
+                if (currentLayer == KeyboardLayer.NUMERIC) {
+                    // Double-tap: the digit was already committed directly,
+                    // so the editor replaces it (no Telex buffer involved).
+                    listener.onReplaceDirectCharacter(ch)
+                } else {
+                    listener.onReplaceCharacter(ch)
+                }
             } else if (currentLayer == KeyboardLayer.NUMERIC) {
                 // Numeric-layer symbols commit directly, no Telex processing.
                 listener.onDirectCharacter(ch)
@@ -1018,14 +1113,15 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     companion object {
         private const val LONG_PRESS_MS = 350L
-        private const val DOUBLE_TAP_MS = 250L
         private const val BACKSPACE_INITIAL_DELAY_MS = 400L
         private const val BACKSPACE_REPEAT_MS = 60L
-        private const val HAPTIC_FEEDBACK_ENABLED = 1 // matches HapticFeedbackConstants
 
         private const val HANDLE_HEIGHT_DP = 14f
         private const val HANDLE_PILL_WIDTH_DP = 40f
         private const val HANDLE_PILL_HEIGHT_DP = 4f
+
+        /** Row 3 (control row) is 75% of the standard row height. */
+        private const val ROW3_HEIGHT_RATIO = 0.75f
 
         /** Max chars of a clipboard item shown on the list row (display only;
          *  keeps the label clear of the dismiss button). */

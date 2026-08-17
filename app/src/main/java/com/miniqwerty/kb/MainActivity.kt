@@ -6,9 +6,13 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import android.widget.RadioGroup
+import android.widget.SeekBar
+import android.widget.Switch
+import android.widget.TextView
 
 /**
- * Settings screen for the keyboard: theme mode.
+ * Settings screen for the keyboard: theme mode, haptics, key popup,
+ * smart Telex, and the double-tap window.
  * Also the launcher entry point for the app.
  */
 class MainActivity : Activity() {
@@ -34,6 +38,53 @@ class MainActivity : Activity() {
             }
             prefs.edit().putInt(Prefs.KEY_THEME_MODE, mode).apply()
         }
+
+        // ── Haptics ───────────────────────────────────────────────────────
+        val hapticSwitch = findViewById<Switch>(R.id.haptic_switch)
+        hapticSwitch.isChecked = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
+        hapticSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(Prefs.KEY_HAPTIC_ENABLED, checked).apply()
+        }
+
+        // ── Key popup ─────────────────────────────────────────────────────
+        val popupSwitch = findViewById<Switch>(R.id.popup_switch)
+        popupSwitch.isChecked = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
+        popupSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(Prefs.KEY_KEY_POPUP_ENABLED, checked).apply()
+        }
+
+        // ── Smart Telex ───────────────────────────────────────────────────
+        val smartSwitch = findViewById<Switch>(R.id.smart_switch)
+        smartSwitch.isChecked = prefs.getBoolean(Prefs.KEY_SMART_TELEX_ENABLED, true)
+        smartSwitch.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(Prefs.KEY_SMART_TELEX_ENABLED, checked).apply()
+        }
+
+        // ── Double-tap window ─────────────────────────────────────────────
+        val doubleTapValue = findViewById<TextView>(R.id.double_tap_value)
+        val doubleTapSeek = findViewById<SeekBar>(R.id.double_tap_seek)
+        fun msToProgress(ms: Long): Int =
+            ((ms - Prefs.DOUBLE_TAP_MIN_MS) / 10).toInt()
+        fun progressToMs(progress: Int): Long =
+            Prefs.DOUBLE_TAP_MIN_MS + progress * 10L
+
+        val currentMs = prefs.getLong(Prefs.KEY_DOUBLE_TAP_MS, Prefs.DOUBLE_TAP_DEFAULT_MS)
+            .coerceIn(Prefs.DOUBLE_TAP_MIN_MS, Prefs.DOUBLE_TAP_MAX_MS)
+        doubleTapSeek.progress = msToProgress(currentMs)
+        doubleTapValue.text = getString(R.string.double_tap_label, currentMs)
+        // Label updates live; the value is persisted when the drag ends to
+        // avoid writing on every tick.
+        doubleTapSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                doubleTapValue.text = getString(R.string.double_tap_label, progressToMs(progress))
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar) {
+                prefs.edit().putLong(Prefs.KEY_DOUBLE_TAP_MS, progressToMs(seekBar.progress)).apply()
+            }
+        })
 
         // ── Enable keyboard shortcut ──────────────────────────────────────
         findViewById<Button>(R.id.enable_button).setOnClickListener {

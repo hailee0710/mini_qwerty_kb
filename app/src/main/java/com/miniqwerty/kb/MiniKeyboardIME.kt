@@ -60,11 +60,30 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         }
     }
 
+    // ── Smart Telex ──────────────────────────────────────────────────────
+    /** User toggle for English-aware validation. */
+    private var smartTelexEnabled = true
+
+    /** Known Vietnamese words, loaded once from assets; null while loading
+     *  or on load failure (commit-time dictionary check is then skipped). */
+    private var wordDict: Set<String>? = null
+
+    private var wordDictLoaded = false
+
     // Applies a theme change the moment the settings screen writes it —
     // same process, so the SharedPreferences listener fires live.
     private val onPrefsChanged = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == Prefs.KEY_THEME_MODE && ::keyboardView.isInitialized) {
-            keyboardView.refreshTheme()
+        when (key) {
+            Prefs.KEY_SMART_TELEX_ENABLED -> {
+                smartTelexEnabled = getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+                    .getBoolean(Prefs.KEY_SMART_TELEX_ENABLED, true)
+            }
+            Prefs.KEY_THEME_MODE, Prefs.KEY_HAPTIC_ENABLED,
+            Prefs.KEY_KEY_POPUP_ENABLED, Prefs.KEY_DOUBLE_TAP_MS -> {
+                if (::keyboardView.isInitialized) {
+                    keyboardView.refreshTheme()
+                }
+            }
         }
     }
 
@@ -78,6 +97,9 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         clipboardManager.addPrimaryClipChangedListener(onPrimaryClipChanged)
         getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(onPrefsChanged)
+        smartTelexEnabled = getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+            .getBoolean(Prefs.KEY_SMART_TELEX_ENABLED, true)
+        loadWordDict()
     }
 
     override fun onDestroy() {
@@ -170,6 +192,15 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         ic.commitText(char.toString(), 1)
     }
 
+    override fun onReplaceDirectCharacter(char: Char) {
+        // Numeric-layer double-tap: the first tap already committed the digit
+        // directly, so delete it in the editor and insert the symbol.
+        val ic = currentInputConnection ?: return
+        commitBuffer(ic)
+        ic.deleteSurroundingText(1, 0)
+        ic.commitText(char.toString(), 1)
+    }
+
     override fun onBackspace() {
         val ic = currentInputConnection ?: return
 
@@ -197,7 +228,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
 
         if (rawBuffer.isNotEmpty()) {
             // Resolve and commit the word, then append the space
-            val resolved = TelexProcessor.resolve(rawBuffer.toString())
+            val resolved = TelexProcessor.resolve(
+                rawBuffer.toString(), smart = smartTelexEnabled, dict = wordDict)
             ic.commitText(resolved + " ", 1)
             rawBuffer.clear()
         } else {
@@ -366,6 +398,27 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     // ─────────────────────────────────────────────────────────────────────
 
     /**
+     * Loads the Vietnamese word list from assets on a background thread.
+     * Failure (missing asset, IO error) leaves [wordDict] null — smart mode
+     * then falls back to shape validation only.
+     */
+    private fun loadWordDict() {
+        if (wordDictLoaded) return
+        wordDictLoaded = true
+        Thread {
+            try {
+                val words = HashSet<String>(50_000)
+                assets.open("vi_words.txt").bufferedReader().useLines { lines ->
+                    lines.forEach { words.add(it) }
+                }
+                wordDict = words
+            } catch (e: Exception) {
+                wordDict = null
+            }
+        }.start()
+    }
+
+    /**
      * Resolves the raw buffer through [TelexProcessor] and updates the
      * composing region in the target editor via [InputConnection.setComposingText].
      */
@@ -376,7 +429,10 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
             ic.setComposingText("", 0)
             return
         }
-        val resolved = TelexProcessor.resolve(rawBuffer.toString())
+        // Live composing display: shape validation only, no dictionary —
+        // the commit-time check corrects the final word (Gboard-style).
+        val resolved = TelexProcessor.resolve(
+            rawBuffer.toString(), smart = smartTelexEnabled, dict = null)
         ic.setComposingText(resolved, 1)
     }
 
@@ -389,7 +445,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
      * have the visible composing word silently wiped.
      */
     private fun commitBuffer(ic: InputConnection) {
-        val resolved = TelexProcessor.resolve(rawBuffer.toString())
+        val resolved = TelexProcessor.resolve(
+            rawBuffer.toString(), smart = smartTelexEnabled, dict = wordDict)
         if (resolved.isNotEmpty()) {
             ic.commitText(resolved, 1)
         }
@@ -406,7 +463,8 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
      */
     private fun commitPending() {
         val ic = currentInputConnection ?: return
-        val resolved = TelexProcessor.resolve(rawBuffer.toString())
+        val resolved = TelexProcessor.resolve(
+            rawBuffer.toString(), smart = smartTelexEnabled, dict = wordDict)
         if (resolved.isNotEmpty() && editorHasComposingRegion()) {
             ic.commitText(resolved, 1)
         }
