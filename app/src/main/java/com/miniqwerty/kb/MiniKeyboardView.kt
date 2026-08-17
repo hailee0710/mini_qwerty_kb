@@ -290,38 +290,39 @@ class MiniKeyboardView(context: Context) : View(context) {
         ),
     )
 
-    // Numeric layer. Digits carry their shifted symbol as secondary, like a
-    // computer keyboard; the remaining symbols fill row 2.
+    // Numeric layer. Row 1 is digits only; row 2 holds the frequent symbols,
+    // with the rarer ones reachable by double-tap (secondaries).
     private val numericKeys: List<List<KeyDef>> = listOf(
-        // Row 1 — digits with shift symbols, dash at the right end
+        // Row 1 — digits only; symbols live on row 2
         listOf(
-            KeyDef("1", "!"),
-            KeyDef("2", "@"),
-            KeyDef("3", "#"),
-            KeyDef("4", "$"),
-            KeyDef("5", "%"),
-            KeyDef("6", "^"),
-            KeyDef("7", "&"),
-            KeyDef("8", "*"),
-            KeyDef("9", "("),
-            KeyDef("0", ")"),
-            KeyDef("-", "_"),
+            KeyDef("1", null),
+            KeyDef("2", null),
+            KeyDef("3", null),
+            KeyDef("4", null),
+            KeyDef("5", null),
+            KeyDef("6", null),
+            KeyDef("7", null),
+            KeyDef("8", null),
+            KeyDef("9", null),
+            KeyDef("0", null),
         ),
-        // Row 2 — remaining punctuation, backspace at the end
+        // Row 2 — frequent symbols, backspace at the end; double-tap gives
+        // the remaining symbols ( ( under ), [ under ], & under :)
         listOf(
-            KeyDef("`", "~"),
-            KeyDef("=", "+"),
-            KeyDef("[", "{"),
-            KeyDef("]", "}"),
-            KeyDef("\\", "|"),
-            KeyDef(";", ":"),
-            KeyDef("'", "\""),
-            KeyDef("<", ">"),
-            KeyDef("/", "?"),
+            KeyDef("@", "~"),
+            KeyDef("!", "#"),
+            KeyDef("%", "$"),
+            KeyDef(":", "&"),
+            KeyDef(")", "("),
+            KeyDef("-", "_"),
+            KeyDef("?", "+"),
+            KeyDef("=", ";"),
+            KeyDef("/", "'"),
+            KeyDef("]", "["),
             KeyDef("⌫", null, keyType = KeyType.BACKSPACE),
         ),
         // Row 3 — control row, "," below "." on the right of the space.
-        // 11 total units so the dot matches the symbol-key width in rows 1–2.
+        // 11 total units so the dot matches the symbol-key width in row 2.
         listOf(
             KeyDef("ABC", null, widthUnits = 1.5f, keyType = KeyType.ABC),
             KeyDef(" ", null, widthUnits = 6f, keyType = KeyType.SPACE),
