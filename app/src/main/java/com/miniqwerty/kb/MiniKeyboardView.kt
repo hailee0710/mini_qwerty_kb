@@ -87,7 +87,6 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     // ── Behavior toggles (re-read in refreshTheme) ───────────────────────
     private var hapticEnabled: Boolean = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
-    private var popupEnabled: Boolean = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
     private var doubleTapMs: Long = prefs.getLong(Prefs.KEY_DOUBLE_TAP_MS, Prefs.DOUBLE_TAP_DEFAULT_MS)
 
     // ── Theme state ───────────────────────────────────────────────────────
@@ -167,11 +166,6 @@ class MiniKeyboardView(context: Context) : View(context) {
         textAlign = Paint.Align.LEFT
     }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val popupBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val popupTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        isFakeBoldText = true
-    }
 
     // ── Corner radius ─────────────────────────────────────────────────────
     private val cornerRadius = 6f
@@ -201,7 +195,6 @@ class MiniKeyboardView(context: Context) : View(context) {
      *  toggles so settings changes land on the open keyboard. */
     fun refreshTheme() {
         hapticEnabled = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
-        popupEnabled = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
         doubleTapMs = prefs.getLong(Prefs.KEY_DOUBLE_TAP_MS, Prefs.DOUBLE_TAP_DEFAULT_MS)
         val dark = resolveDarkTheme()
         if (darkTheme == dark) return
@@ -223,8 +216,6 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionBoldTextPaint.color = 0xFFBDC1C6.toInt()
             clipboardItemTextPaint.color = 0xFFE8EAED.toInt()
             handlePaint.color = 0x66E8EAED.toInt()
-            popupBgPaint.color = 0xFFE8EAED.toInt()
-            popupTextPaint.color = 0xFF202124.toInt()
         } else {
             bgPaint.color = 0xFFC7CBD2.toInt()
             keyBgPaint.color = 0xFFE0E0E0.toInt()
@@ -237,8 +228,6 @@ class MiniKeyboardView(context: Context) : View(context) {
             functionBoldTextPaint.color = 0xFF616161.toInt()
             clipboardItemTextPaint.color = 0xFF212121.toInt()
             handlePaint.color = 0x66808080.toInt()
-            popupBgPaint.color = 0xFF3C4043.toInt()
-            popupTextPaint.color = 0xFFFFFFFF.toInt()
         }
     }
 
@@ -395,7 +384,6 @@ class MiniKeyboardView(context: Context) : View(context) {
         secondaryTextPaint.textSize = keyHeight * 0.20f
         functionTextPaint.textSize = keyHeight * 0.24f
         functionBoldTextPaint.textSize = keyHeight * 0.30f
-        popupTextPaint.textSize = keyHeight * 0.5f
         // Clip rows are short — scale text relative to the row, not the key.
         clipboardItemTextPaint.textSize = keyHeight * 0.34f
 
@@ -569,8 +557,6 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
         }
 
-        drawKeyPopup(canvas)
-
         if (currentLayer == KeyboardLayer.CLIPBOARD) {
             // Close FAB floats above the list, and the empty state is a plain
             // centered hint — the layer itself is otherwise blank.
@@ -706,50 +692,6 @@ class MiniKeyboardView(context: Context) : View(context) {
                 secondaryTextPaint
             )
         }
-    }
-
-    /** Key-press popup: bubble with the typed character near the pressed key.
-     *  Drawn above the key (below when there is no room, e.g. row 1), while
-     *  [downKey] is held. Character keys only. */
-    private fun drawKeyPopup(canvas: Canvas) {
-        val key = downKey ?: return
-        if (!popupEnabled || key.keyType != KeyType.CHARACTER) return
-        val density = resources.displayMetrics.density
-        val bubbleH = keyHeight * 0.85f
-        val bubbleW = maxOf(keyWidth * 1.1f, bubbleH * 1.5f)
-        val cx = key.left + (key.right - key.left) / 2f
-        val margin = 6f * density
-
-        var top = key.top - margin - bubbleH          // prefer above
-        val below = top < handleHeightPx + 2f * density
-        if (below) top = key.bottom + margin          // row 1: not enough room
-        top = top.coerceAtMost(viewHeight - bubbleH - margin)
-
-        val left = maxOf(4f * density, cx - bubbleW / 2f)
-        val right = minOf(viewWidth - 4f * density, cx + bubbleW / 2f)
-        if (right <= left) return
-
-        val rect = RectF(left, top, right, top + bubbleH)
-        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, popupBgPaint)
-
-        // Pointer tail toward the key
-        val tail = 7f * density
-        val tailPath = Path()
-        if (below) {
-            tailPath.moveTo(cx - 5f * density, top + 1f)
-            tailPath.lineTo(cx + 5f * density, top + 1f)
-            tailPath.lineTo(cx, top - tail)
-        } else {
-            tailPath.moveTo(cx - 5f * density, rect.bottom - 1f)
-            tailPath.lineTo(cx + 5f * density, rect.bottom - 1f)
-            tailPath.lineTo(cx, rect.bottom + tail)
-        }
-        tailPath.close()
-        canvas.drawPath(tailPath, popupBgPaint)
-
-        val label = resolveCase(key.primary.lowercase())
-        val baseline = rect.centerY() + popupTextPaint.textSize * 0.35f
-        canvas.drawText(label, cx, baseline, popupTextPaint)
     }
 
     private fun drawFunctionKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {

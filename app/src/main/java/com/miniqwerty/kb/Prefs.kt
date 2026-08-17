@@ -21,8 +21,6 @@ object Prefs {
 
     // Haptic feedback (vibrate on key press)
     const val KEY_HAPTIC_ENABLED = "haptic_enabled"
-    // Key press popup (bubble showing the typed character)
-    const val KEY_KEY_POPUP_ENABLED = "key_popup_enabled"
     // Smart Telex: English-aware syllable validation + dictionary check at commit
     const val KEY_SMART_TELEX_ENABLED = "smart_telex_enabled"
     // Quick double-tap window, in ms

@@ -11,8 +11,8 @@ import android.widget.Switch
 import android.widget.TextView
 
 /**
- * Settings screen for the keyboard: theme mode, haptics, key popup,
- * smart Telex, and the double-tap window.
+ * Settings screen for the keyboard: theme mode, haptics, smart Telex,
+ * and the double-tap window.
  * Also the launcher entry point for the app.
  */
 class MainActivity : Activity() {
@@ -44,13 +44,6 @@ class MainActivity : Activity() {
         hapticSwitch.isChecked = prefs.getBoolean(Prefs.KEY_HAPTIC_ENABLED, true)
         hapticSwitch.setOnCheckedChangeListener { _, checked ->
             prefs.edit().putBoolean(Prefs.KEY_HAPTIC_ENABLED, checked).apply()
-        }
-
-        // ── Key popup ─────────────────────────────────────────────────────
-        val popupSwitch = findViewById<Switch>(R.id.popup_switch)
-        popupSwitch.isChecked = prefs.getBoolean(Prefs.KEY_KEY_POPUP_ENABLED, true)
-        popupSwitch.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean(Prefs.KEY_KEY_POPUP_ENABLED, checked).apply()
         }
 
         // ── Smart Telex ───────────────────────────────────────────────────

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Android custom keyboard (IME) with a compact 3-row QWERTY layout and a built-in Vietnamese Telex input engine, including an English-aware "Smart Telex" mode backed by a word dictionary. Beyond the keyboard itself there is one settings screen (theme mode, haptics, key popup, Smart Telex, double-tap window), which is also the app's launcher entry point. minSdk 21, compileSdk/targetSdk 34, JDK 17.
+Android custom keyboard (IME) with a compact 3-row QWERTY layout and a built-in Vietnamese Telex input engine, including an English-aware "Smart Telex" mode backed by a word dictionary. Beyond the keyboard itself there is one settings screen (theme mode, haptics, Smart Telex, double-tap window), which is also the app's launcher entry point. minSdk 21, compileSdk/targetSdk 34, JDK 17.
 
 Toolchain pins: AGP 8.2.2, Kotlin 1.9.22, Gradle 8.5. Only external dependency is `androidx.core:core-ktx`.
 
@@ -27,7 +27,7 @@ Source files, each with one clear job:
 - `app/src/main/java/com/miniqwerty/kb/MiniKeyboardIME.kt` — `InputMethodService` subclass. Owns the composing buffer and all interaction with the target app via `InputConnection`.
 - `app/src/main/java/com/miniqwerty/kb/MiniKeyboardView.kt` — custom `View` that draws the keyboard on a `Canvas` and handles touch. Emits events through the `OnKeyActionListener` interface (defined in this file). No Android XML layouts — everything is drawn.
 - `app/src/main/java/com/miniqwerty/kb/TelexProcessor.kt` — stateless `object`; pure text transformation, no Android dependencies. Unit-testable without instrumentation.
-- `app/src/main/java/com/miniqwerty/kb/MainActivity.kt` — settings screen (plain `Activity`, no AppCompat): theme mode radio group, switches for haptics / key popup / Smart Telex, double-tap window slider, "enable keyboard" shortcut to `Settings.ACTION_INPUT_METHOD_SETTINGS`. Also the launcher entry point.
+- `app/src/main/java/com/miniqwerty/kb/MainActivity.kt` — settings screen (plain `Activity`, no AppCompat): theme mode radio group, switches for haptics / Smart Telex, double-tap window slider, "enable keyboard" shortcut to `Settings.ACTION_INPUT_METHOD_SETTINGS`. Also the launcher entry point.
 - `app/src/main/java/com/miniqwerty/kb/Prefs.kt` — shared preference keys, defaults, and constants shared by the IME and the settings screen (`miniqwerty_kb_prefs`).
 - `app/src/main/assets/vi_words.txt` — Vietnamese word list for the Smart Telex dictionary check (one lowercase word per line). Generated from `tools/data/vi_50k.txt` with `python3 tools/gen_dict.py` (Vietnamese letters only — `f j w z` and foreign characters dropped, ~40k words).
 
@@ -65,7 +65,7 @@ Numeric layer: row 1 is 10 digits with no secondaries — `1 2 3 4 5 6 7 8 9 0`.
 
 The view draws an opaque background (no transparent IME window) in a light or dark palette. Theme mode is user-selectable via `Prefs.KEY_THEME_MODE` (system / light / dark, default system); `MiniKeyboardView.resolveDarkTheme()` resolves the pref and `refreshTheme()` reapplies colors. The IME calls `refreshTheme()` on configuration change and every `onStartInputView`, so settings changes apply to the next keyboard window. A drag handle strip (14 dp) at the top resizes the keyboard: dragging changes `rowHeightDp` (clamped 30–75 dp, default 46), persisted in `Prefs.KEY_ROW_HEIGHT_DP`, applied on the next `onMeasure`.
 
-Key presses vibrate via `performHapticFeedback` (`KEYBOARD_TAP`, `LONG_PRESS` on long-press fire) when `Prefs.KEY_HAPTIC_ENABLED` is on (default). While a character key is held, `drawKeyPopup` draws a bubble above the key (below for row 1) showing the typed character, gated by `Prefs.KEY_KEY_POPUP_ENABLED` (default on); long-press dismisses it. Both toggles are re-read in `refreshTheme()` so settings changes apply live.
+Key presses vibrate via `performHapticFeedback` (`KEYBOARD_TAP`, `LONG_PRESS` on long-press fire) when `Prefs.KEY_HAPTIC_ENABLED` is on (default). The toggle is re-read in `refreshTheme()` so settings changes apply live.
 
 ### IME wiring
 

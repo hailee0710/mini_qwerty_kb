@@ -13,8 +13,6 @@
 
     <string name="haptics_title">Haptics</string>
     <string name="haptics_label">Vibration feedback</string>
-    <string name="popup_title">Key popup</string>
-    <string name="popup_label">Show key popup</string>
     <string name="smart_title">Smart Telex</string>
     <string name="smart_label">Smart Telex (English-aware)</string>
     <string name="double_tap_title">Double-tap</string>

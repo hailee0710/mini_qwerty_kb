@@ -79,7 +79,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
                     .getBoolean(Prefs.KEY_SMART_TELEX_ENABLED, true)
             }
             Prefs.KEY_THEME_MODE, Prefs.KEY_HAPTIC_ENABLED,
-            Prefs.KEY_KEY_POPUP_ENABLED, Prefs.KEY_DOUBLE_TAP_MS -> {
+            Prefs.KEY_DOUBLE_TAP_MS -> {
                 if (::keyboardView.isInitialized) {
                     keyboardView.refreshTheme()
                 }
