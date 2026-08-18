@@ -479,9 +479,14 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         }
         // Live composing display: shape validation only, no dictionary —
         // the commit-time check corrects the final word (Gboard-style).
-        val resolved = TelexProcessor.resolve(
-            rawBuffer.toString(), smart = smartTelexEnabled, dict = null)
-        composingShowsRaw = resolved == rawBuffer.toString()
+        // Exception: a mid-word tone key ("masy", "mast") can make an English
+        // word pass the shape check (base → báe as ba+e), so those words get
+        // the dictionary fallback live too. Purely trailing tones ("giengs" →
+        // giễng) keep the pretty composing form until commit.
+        val buffer = rawBuffer.toString()
+        val dict = if (TelexProcessor.hasEmbeddedTone(buffer)) wordDict else null
+        val resolved = TelexProcessor.resolve(buffer, smart = smartTelexEnabled, dict = dict)
+        composingShowsRaw = resolved == buffer
         ic.setComposingText(resolved, 1)
     }
 

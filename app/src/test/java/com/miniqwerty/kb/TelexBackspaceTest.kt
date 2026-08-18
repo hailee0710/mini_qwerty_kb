@@ -11,12 +11,18 @@ import org.junit.Test
  *
  * The simulation mirrors MiniKeyboardIME exactly, minus the InputConnection:
  * every keystroke appends to the raw buffer and re-resolves through
- * TelexProcessor (shape-only, dict = null), and backspace either shows the raw
- * prefix (when the previous display was the literal buffer) or re-resolves.
+ * TelexProcessor, and backspace either shows the raw prefix (when the previous
+ * display was the literal buffer) or re-resolves. As in the IME, the
+ * dictionary is passed only when the buffer holds a mid-word tone key
+ * ([TelexProcessor.hasEmbeddedTone]) — otherwise the display is shape-only.
  */
 class TelexBackspaceTest {
 
-    private class Sim {
+    /** Stand-in for the real word dictionary; deliberately absent of any
+     *  English word so those fall back to their literal buffer. */
+    private val dict = setOf("má", "máy", "mát", "mứa", "ươm", "hòa", "tôi", "â")
+
+    private class Sim(private val dict: Set<String>) {
         val raw = StringBuilder()
         var composingShowsRaw = false
         val displays = mutableListOf<String>()
@@ -49,14 +55,16 @@ class TelexBackspaceTest {
                 composingShowsRaw = false
                 return
             }
-            val resolved = TelexProcessor.resolve(raw.toString(), smart = true, dict = null)
-            composingShowsRaw = resolved == raw.toString()
+            val buffer = raw.toString()
+            val dict = if (TelexProcessor.hasEmbeddedTone(buffer)) this.dict else null
+            val resolved = TelexProcessor.resolve(buffer, smart = true, dict = dict)
+            composingShowsRaw = resolved == buffer
             displays.add(resolved)
         }
     }
 
     private fun simulate(word: String): List<String> {
-        val s = Sim()
+        val s = Sim(dict)
         word.forEach { s.type(it) }
         repeat(word.length) { s.backspace() }
         return s.displays

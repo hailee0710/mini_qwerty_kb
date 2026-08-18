@@ -17,7 +17,11 @@ package com.miniqwerty.kb
  * - x → ngã (~)    j → nặng (.)     z → (reset / no tone)
  *
  * ## State Machine Rules
- * 1. Tone keys apply to the main vowel in the current composing span.
+ * 1. Tone keys apply to the main vowel in the current composing span. They
+ *    may land mid-word, before the word is complete ("masy" → máy, "mast" →
+ *    mát), or at the end of the word ("mays" → máy); a tone key before any
+ *    vowel is an onset consonant (sad, run) and a doubled tone-key letter is
+ *    a consonant, not a tone (office, message, carry) — both stay literal.
  * 2. Pressing the same tone key twice toggles the tone off (literal char).
  * 3. Pressing a different tone key replaces the current tone.
  * 4. The key 'z' resets the tone state (literalizes any pending tone).
@@ -179,22 +183,28 @@ object TelexProcessor {
         val content    = raw.substring(0, baseLen)
         val toneSuffix = raw.substring(baseLen)
 
-        // 2. Apply left-to-right vowel transformations
-        val (base, undone) = applyVowelTransforms(content)
+        // 1b. Pull tone keys embedded mid-word out of the content. Telex lets
+        // the tone key land before the word is complete ("masy" → máy, "mast"
+        // → mát); such keys join the trailing suffix in the tone pipeline.
+        val (cleaned, midTones) = extractEmbeddedTones(content)
 
-        if (toneSuffix.isEmpty()) return CoreResult(base, undone)
+        // 2. Apply left-to-right vowel transformations
+        val (base, undone) = applyVowelTransforms(cleaned)
+
+        val toneKeys = midTones + toneSuffix
+        if (toneKeys.isEmpty()) return CoreResult(base, undone)
 
         // An undo means the word is deliberately literal — trailing tone
         // keys included ("dooor" → "door", not "doỏ").
-        if (undone) return CoreResult(base + toneSuffix, true)
+        if (undone) return CoreResult(base + toneKeys, true)
 
         // 3. If the base has no vowel, trailing tone keys are literal.
         if (!hasVowel(base)) {
-            return CoreResult(base + toneSuffix, false)
+            return CoreResult(base + toneKeys, false)
         }
 
         // 4. Process the tone-key suffix into a final tone + literal spill.
-        val (finalTone, literals) = reduceToneSuffix(toneSuffix)
+        val (finalTone, literals) = reduceToneSuffix(toneKeys)
         val spilled = literals.isNotEmpty()
 
         return if (finalTone != null) {
@@ -215,6 +225,48 @@ object TelexProcessor {
     /** True when [s] contains at least one Vietnamese vowel character. */
     private fun hasVowel(s: String): Boolean =
         s.any { it.lowercaseChar() in ALL_VOWELS }
+
+    /**
+     * Splits [content] into its tone-free form and the tone keys embedded
+     * mid-word. A tone key counts as a tone when a vowel precedes it AND it is
+     * not adjacent to another tone key: "masy" → máy, "mast" → mát. Before any
+     * vowel it is an onset consonant (sad, run) and stays in the cleaned
+     * string, and so do doubled tone-key letters — English never spells a
+     * doubled consonant, so "ff" in office, "ss" in message and "rr" in carry
+     * are consonants, not tones. Vietnamese never doubles letters, so this
+     * cannot misfire on Vietnamese input.
+     */
+    private fun extractEmbeddedTones(content: String): Pair<String, String> {
+        val midTones = StringBuilder()
+        val cleaned = StringBuilder(content.length)
+        var seenVowel = false
+        for (i in content.indices) {
+            val ch = content[i]
+            val prevIsToneKey = i > 0 && content[i - 1] in TONE_KEYS
+            val nextIsToneKey = i + 1 < content.length && content[i + 1] in TONE_KEYS
+            val isMidTone = ch in TONE_KEYS && seenVowel && !prevIsToneKey && !nextIsToneKey
+            if (isMidTone) {
+                midTones.append(ch)
+            } else {
+                cleaned.append(ch)
+            }
+            if (ch.lowercaseChar() in ALL_VOWELS) seenVowel = true
+        }
+        return cleaned.toString() to midTones.toString()
+    }
+
+    /**
+     * True when [raw] holds a mid-word tone key typed before the word was
+     * complete (the 's' in "masy" / "mast"). The IME uses this to decide
+     * whether the live composing display needs the dictionary check: only
+     * words with embedded tones can misfire on English (base → báe passes
+     * the shape check as ba+e), so only those pay the dict lookup.
+     */
+    fun hasEmbeddedTone(raw: String): Boolean {
+        val baseLen = raw.indexOfLast { it !in TONE_KEYS } + 1
+        if (baseLen <= 0) return false
+        return extractEmbeddedTones(raw.substring(0, baseLen)).second.isNotEmpty()
+    }
 
     /**
      * Left-to-right greedy vowel-transformation pass.
@@ -315,10 +367,12 @@ object TelexProcessor {
         val idx = findMainVowelIndex(base) ?: return base
         val vowel = base[idx]
         val isUpper = vowel.isUpperCase()
-        val lookupKey = vowel.lowercaseChar()
 
+        // Look up the vowel with its own case: TONE_MAP keys are lowercase,
+        // TONE_MAP_UPPER keys are uppercase — lowercasing the key would miss
+        // the uppercase map and silently drop the tone ("As" → "A").
         val toneMap = if (isUpper) TONE_MAP_UPPER[tone] else TONE_MAP[tone]
-        val tonedVowel = toneMap?.get(lookupKey) ?: return base
+        val tonedVowel = toneMap?.get(vowel) ?: return base
 
         return buildString(base.length) {
             append(base, 0, idx)
