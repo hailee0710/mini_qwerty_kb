@@ -21,3 +21,4 @@ gradle/wrapper/gradle-wrapper.jar
 *.log
 .DS_Store
 tools/__pycache__/
+/tools/data
