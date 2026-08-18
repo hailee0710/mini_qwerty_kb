@@ -14,7 +14,7 @@ class TelexProcessorTest {
     // Small stand-in for the real dictionary: only the words the assertions
     // rely on. Tests that need the fallback pass a dict missing the toned form.
     private val dict: Set<String> = setOf(
-        "má", "máy", "mát", "mứa", "ươm",
+        "má", "máy", "mát", "mứa", "ươm", "trượt",
     )
 
     // ── Mid-word tone keys (the "masy" bug) ──────────────────────────────
@@ -115,6 +115,13 @@ class TelexProcessorTest {
 
     @Test fun `bare fragment not in dict commits raw - uow`() {
         assertEquals("uow", TelexProcessor.resolve("uow", smart = true, dict = dict))
+    }
+
+    @Test fun `late-w word survives smart and dict - truotwj`() {
+        // "truotwj" → trượt: the trailing w converts uo → ươ mid-word.
+        assertEquals("trượt", TelexProcessor.resolve("truotwj", smart = true, dict = dict))
+        // Without the dictionary the resolved form falls back to the raw keys.
+        assertEquals("truotwj", TelexProcessor.resolve("truotwj", smart = true, dict = emptySet()))
     }
 
     @Test fun `toned form missing from dict falls back to raw - for`() {

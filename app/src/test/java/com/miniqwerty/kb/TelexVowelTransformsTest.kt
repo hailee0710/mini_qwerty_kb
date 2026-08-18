@@ -49,6 +49,42 @@ class TelexVowelTransformsTest {
         assertEquals("ai", TelexProcessor.resolve("ai"))
     }
 
+    // ── Trailing w: uo converts retroactively, w after a consonant is ư ──
+
+    @Test fun `late w converts an earlier uo into uow`() {
+        // The closing consonant sits between o and w — the w still makes ươ.
+        assertEquals("trươt", TelexProcessor.resolve("truotw"))
+        assertEquals("tươt", TelexProcessor.resolve("tuotw"))
+        assertEquals("trượt", TelexProcessor.resolve("truotwj"))
+    }
+
+    @Test fun `w after a consonant spells uw directly`() {
+        assertEquals("trư", TelexProcessor.resolve("trw"))
+        assertEquals("tư", TelexProcessor.resolve("tw"))
+        assertEquals("như", TelexProcessor.resolve("nhw"))
+    }
+
+    @Test fun `w after a vowel stays literal`() {
+        assertEquals("hew", TelexProcessor.resolve("hew"))
+        assertEquals("new", TelexProcessor.resolve("new"))
+        assertEquals("view", TelexProcessor.resolve("view"))
+    }
+
+    @Test fun `contiguous transforms still win over the late w`() {
+        assertEquals("mơ", TelexProcessor.resolve("mow"))
+        assertEquals("mă", TelexProcessor.resolve("maw"))
+        assertEquals("tư", TelexProcessor.resolve("tuw"))
+        assertEquals("quơ", TelexProcessor.resolve("quow"))
+        assertEquals("mươi", TelexProcessor.resolve("muowi"))
+        assertEquals("muă", TelexProcessor.resolve("muaw"))
+    }
+
+    @Test fun `late w converts the qu u skipped and the last uo used`() {
+        assertEquals("tươq", TelexProcessor.resolve("tuoqw"))
+        // Uppercase w and u follow the same rules.
+        assertEquals("Trượt", TelexProcessor.resolve("TruotWj"))
+    }
+
     // ── Undo: a third copy of the digraph's last letter ──────────────────
 
     @Test fun `third press undoes the transform`() {

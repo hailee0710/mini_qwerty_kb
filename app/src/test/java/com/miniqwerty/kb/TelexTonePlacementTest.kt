@@ -44,6 +44,8 @@ class TelexTonePlacementTest {
         assertEquals("được", tone("dduowc", 'j'))  // đ + ươc, nặng on ơ
         assertEquals("người", tone("nguowi", 'f')) // ươ + i, huyền on ơ
         assertEquals("thướng", tone("thuowng", 's'))
+        // Late w (after the closing consonant): "truotw" → ươt still tones ơ.
+        assertEquals("trượt", tone("truotw", 'j'))
     }
 
     // ── Rule 2: triphthongs tone the middle vowel ────────────────────────

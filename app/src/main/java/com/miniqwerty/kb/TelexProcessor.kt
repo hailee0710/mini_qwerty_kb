@@ -11,6 +11,10 @@ package com.miniqwerty.kb
  * - oo → ô    ow → ơ    uw → ư
  * - uow → ươ
  * - dd → đ
+ * - Trailing w: a w typed late (after the closing consonant) still converts
+ *   the word's uo into ươ ("truotw" → trươt, "truotwj" → trượt); with no uo
+ *   to convert, a w typed right after a consonant spells ư directly ("trw" →
+ *   trư, "nhw" → như). A w after a vowel stays literal ("hew", "new", "view").
  *
  * ## Tone Keys
  * - s → sắc (´)    f → huyền (`)    r → hỏi (̉)
@@ -319,10 +323,55 @@ object TelexProcessor {
                     continue
                 }
             }
+            // A 'w' outside a contiguous vowel transform still produces ư.
+            // A late w (typed after the closing consonant) converts the
+            // word's uo nucleus into ươ ("truotw" → trươt); with no uo left
+            // to convert, a w typed right after a consonant spells ư directly
+            // ("trw" → trư, "nhw" → như). A w after a vowel stays literal
+            // ("hew", "new", "view").
+            if (s[i].lowercaseChar() == 'w') {
+                if (convertTrailingUo(sb)) {
+                    // The w is consumed converting an earlier uo into ươ.
+                } else if (i > 0) {
+                    val prev = s[i - 1].lowercaseChar()
+                    // Any non-vowel letter counts as a consonant here — even a
+                    // tone key (r in "trw", s in "swim") is a real consonant
+                    // when it is not applying a tone.
+                    if (prev in 'a'..'z' && prev !in ALL_VOWELS && prev != 'w') {
+                        sb.append(if (s[i].isUpperCase()) 'Ư' else 'ư')
+                    } else {
+                        sb.append(s[i])
+                    }
+                } else {
+                    sb.append(s[i])
+                }
+                i++
+                continue
+            }
+
             sb.append(s[i])
             i++
         }
         return sb.toString() to undone
+    }
+
+    /**
+     * Replaces the last uo pair already written to [sb] with ươ, consuming
+     * the trailing w that triggered the conversion ("truotw" → trươt). The u
+     * of a qu digraph is a consonant and is skipped. Returns false when no
+     * uo pair remains.
+     */
+    private fun convertTrailingUo(sb: StringBuilder): Boolean {
+        for (j in sb.length - 1 downTo 0) {
+            if (sb[j].lowercaseChar() != 'u') continue
+            if (j > 0 && sb[j - 1].lowercaseChar() == 'q') continue
+            if (j + 1 < sb.length && sb[j + 1].lowercaseChar() == 'o') {
+                val upper = sb[j].isUpperCase()
+                sb.replace(j, j + 2, if (upper) "ƯƠ" else "ươ")
+                return true
+            }
+        }
+        return false
     }
 
     /** Appends [key]'s letters unchanged, cased by [upper]. */
