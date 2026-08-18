@@ -15,8 +15,21 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        val storeFileProp = providers.gradleProperty("miniqwerty.storeFile").orNull
+        if (storeFileProp != null) {
+            create("release") {
+                storeFile = file(storeFileProp)
+                storePassword = providers.gradleProperty("miniqwerty.storePassword").get()
+                keyAlias = providers.gradleProperty("miniqwerty.keyAlias").get()
+                keyPassword = providers.gradleProperty("miniqwerty.keyPassword").get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
