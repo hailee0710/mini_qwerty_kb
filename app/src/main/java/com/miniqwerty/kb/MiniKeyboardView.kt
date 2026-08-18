@@ -54,7 +54,8 @@ private enum class KeyboardLayer { LETTERS, NUMERIC, CLIPBOARD }
 private data class KeyDef(
     val primary: String,
     val secondary: String?,
-    val isVowel: Boolean = false,
+    /** Telex tone key (s f r x j) — drawn in the orange accent. */
+    val isTone: Boolean = false,
     val widthUnits: Float = 1f,
     val keyType: KeyType = KeyType.CHARACTER,
     /** Position in the clipboard history (CLIPBOARD_ITEM keys only). */
@@ -140,15 +141,12 @@ class MiniKeyboardView(context: Context) : View(context) {
     // ── Paints ────────────────────────────────────────────────────────────
     private val bgPaint = Paint().apply { style = Paint.Style.FILL }
     private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val keyBgModifierPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val keyBgPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val keyBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1f
-    }
     private val primaryTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
     }
-    private val vowelTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val toneTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
@@ -167,8 +165,8 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
-    // ── Corner radius ─────────────────────────────────────────────────────
-    private val cornerRadius = 6f
+    // ── Corner radius (recomputed from key height in onSizeChanged) ──────
+    private var cornerRadius = 6f
 
     init {
         applyTheme()
@@ -178,17 +176,8 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Theme
     // ─────────────────────────────────────────────────────────────────────
 
-    private fun isSystemDark(c: Context): Boolean =
-        (c.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
-
     /** Resolve dark/light from the saved theme preference (system by default). */
-    private fun resolveDarkTheme(): Boolean =
-        when (prefs.getInt(Prefs.KEY_THEME_MODE, Prefs.THEME_SYSTEM)) {
-            Prefs.THEME_LIGHT -> false
-            Prefs.THEME_DARK  -> true
-            else              -> isSystemDark(context)
-        }
+    private fun resolveDarkTheme(): Boolean = resolveDarkThemeFor(context)
 
     /** Re-read the theme preference and recolor. Called on init, when the keyboard
      *  window is shown, and on configuration change. Also re-reads the behavior
@@ -205,28 +194,28 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     private fun applyTheme() {
         if (darkTheme) {
-            bgPaint.color = 0xFF17181C.toInt()
-            keyBgPaint.color = 0xFF3C4043.toInt()
-            keyBgPressedPaint.color = 0xFF50545B.toInt()
-            keyBorderPaint.color = 0xFF0F1012.toInt()
-            primaryTextPaint.color = 0xFFE8EAED.toInt()
-            vowelTextPaint.color = 0xFFFF8A50.toInt() // orange accent
-            secondaryTextPaint.color = 0xFF9AA0A6.toInt()
-            functionTextPaint.color = 0xFFBDC1C6.toInt()
-            functionBoldTextPaint.color = 0xFFBDC1C6.toInt()
-            clipboardItemTextPaint.color = 0xFFE8EAED.toInt()
-            handlePaint.color = 0x66E8EAED.toInt()
+            bgPaint.color = DARK_BG_COLOR
+            keyBgPaint.color = 0xFF484C4F.toInt()
+            keyBgModifierPaint.color = 0xFF373C40.toInt()
+            keyBgPressedPaint.color = 0xFF5A5F64.toInt()
+            primaryTextPaint.color = 0xFFFFFFFF.toInt()
+            toneTextPaint.color = 0xFFFF8A50.toInt() // orange accent
+            secondaryTextPaint.color = 0xFF8F8F8F.toInt()
+            functionTextPaint.color = 0xFFFFFFFF.toInt()
+            functionBoldTextPaint.color = 0xFFFFFFFF.toInt()
+            clipboardItemTextPaint.color = 0xFFFFFFFF.toInt()
+            handlePaint.color = 0x59FFFFFF.toInt()
         } else {
-            bgPaint.color = 0xFFC7CBD2.toInt()
-            keyBgPaint.color = 0xFFE0E0E0.toInt()
-            keyBgPressedPaint.color = 0xFFBDBDBD.toInt()
-            keyBorderPaint.color = 0xFFB0B0B0.toInt()
-            primaryTextPaint.color = 0xFF212121.toInt()
-            vowelTextPaint.color = 0xFFFF6D00.toInt() // orange accent
-            secondaryTextPaint.color = 0xFF9E9E9E.toInt()
-            functionTextPaint.color = 0xFF616161.toInt()
-            functionBoldTextPaint.color = 0xFF616161.toInt()
-            clipboardItemTextPaint.color = 0xFF212121.toInt()
+            bgPaint.color = LIGHT_BG_COLOR
+            keyBgPaint.color = 0xFFEEEEEE.toInt()
+            keyBgModifierPaint.color = 0xFFDDE0E4.toInt()
+            keyBgPressedPaint.color = 0xFFCFD3D7.toInt()
+            primaryTextPaint.color = 0xFF2A2A2A.toInt()
+            toneTextPaint.color = 0xFFE65100.toInt() // orange accent
+            secondaryTextPaint.color = 0xFF8A8A8A.toInt()
+            functionTextPaint.color = 0xFF4A4A4A.toInt()
+            functionBoldTextPaint.color = 0xFF4A4A4A.toInt()
+            clipboardItemTextPaint.color = 0xFF2A2A2A.toInt()
             handlePaint.color = 0x66808080.toInt()
         }
     }
@@ -245,27 +234,27 @@ class MiniKeyboardView(context: Context) : View(context) {
     private val letterKeys: List<List<KeyDef>> = listOf(
         // Row 1 — "," at the right end, "." below it
         listOf(
-            KeyDef("X", "Q"),
+            KeyDef("X", "Q", isTone = true),
             KeyDef("W", "?"),
-            KeyDef("E", null, isVowel = true),
-            KeyDef("R", null),
+            KeyDef("E", null),
+            KeyDef("R", null, isTone = true),
             KeyDef("T", null),
             KeyDef("H", "Y"),
-            KeyDef("U", null, isVowel = true),
-            KeyDef("I", "P", isVowel = true),
-            KeyDef("O", null, isVowel = true),
+            KeyDef("U", null),
+            KeyDef("I", "P"),
+            KeyDef("O", null),
             KeyDef(",", "."),
         ),
         // Row 2 — backspace at the end, narrower than the letters grid so
         // the row centers with a small margin (see layoutKeys())
         listOf(
-            KeyDef("A", null, isVowel = true),
-            KeyDef("S", "Z"),
+            KeyDef("A", null),
+            KeyDef("S", "Z", isTone = true),
             KeyDef("D", null),
-            KeyDef("F", "C"),
+            KeyDef("F", "C", isTone = true),
             KeyDef("G", "V"),
             KeyDef("N", "B"),
-            KeyDef("J", "K"),
+            KeyDef("J", "K", isTone = true),
             KeyDef("M", "L"),
             KeyDef("⌫", null, widthUnits = 1.5f, keyType = KeyType.BACKSPACE),
         ),
@@ -379,11 +368,16 @@ class MiniKeyboardView(context: Context) : View(context) {
         keyWidth = w.toFloat() / rows  // rough default for hit padding
 
         // Size text paints proportionally
-        primaryTextPaint.textSize = keyHeight * 0.32f
-        vowelTextPaint.textSize = keyHeight * 0.32f
-        secondaryTextPaint.textSize = keyHeight * 0.20f
-        functionTextPaint.textSize = keyHeight * 0.24f
+        primaryTextPaint.textSize = keyHeight * 0.34f
+        toneTextPaint.textSize = keyHeight * 0.34f
+        // Secondary (double-tap) labels match the primary size.
+        secondaryTextPaint.textSize = keyHeight * 0.34f
+        functionTextPaint.textSize = keyHeight * 0.26f
         functionBoldTextPaint.textSize = keyHeight * 0.30f
+
+        // Large rounded corners, scaled to the key height (the reference look:
+        // flat keys with a generous radius).
+        cornerRadius = keyHeight * 0.10f
         // Clip rows are short — scale text relative to the row, not the key.
         clipboardItemTextPaint.textSize = keyHeight * 0.34f
 
@@ -406,6 +400,10 @@ class MiniKeyboardView(context: Context) : View(context) {
             layoutClipboardKeys()
             return
         }
+        // Keys sit inset from the screen edges, like the reference look.
+        val marginX = KEY_MARGIN_DP * resources.displayMetrics.density
+        val availWidth = viewWidth - 2 * marginX
+
         for ((rowIdx, row) in keys.withIndex()) {
             // The last row (control row) is 75% of the standard row height.
             val rowH = if (rowIdx == keys.lastIndex) keyHeight * ROW3_HEIGHT_RATIO else keyHeight
@@ -419,9 +417,9 @@ class MiniKeyboardView(context: Context) : View(context) {
             // backspace leaves a small margin on each side, and the slight
             // offset against row 1 gives a natural staggered typing feel.
             val isMiddleLetterRow = currentLayer == KeyboardLayer.LETTERS && rowIdx == 1
-            val unitWidth = if (isMiddleLetterRow) viewWidth / 10f else viewWidth / totalUnits
-            val rowWidth = if (isMiddleLetterRow) unitWidth * totalUnits else viewWidth.toFloat()
-            var x = (viewWidth - rowWidth) / 2f
+            val unitWidth = if (isMiddleLetterRow) availWidth / 10f else availWidth / totalUnits
+            val rowWidth = if (isMiddleLetterRow) unitWidth * totalUnits else availWidth
+            var x = marginX + (availWidth - rowWidth) / 2f
 
             for (key in row) {
                 val w = key.widthUnits * unitWidth
@@ -455,10 +453,11 @@ class MiniKeyboardView(context: Context) : View(context) {
         clipboardItemTextPaint.textSize = clipboardSlotH * 0.34f
 
         var y = handleHeightPx - clipboardScrollPx
+        val colWidth = viewWidth / 2f
         for (row in clipboardRows) {
-            for (key in row) {
-                key.left = 0f
-                key.right = viewWidth.toFloat()
+            for ((col, key) in row.withIndex()) {
+                key.left = col * colWidth
+                key.right = (col + 1) * colWidth
                 key.top = y
                 key.bottom = y + clipboardSlotH
             }
@@ -517,14 +516,19 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     private fun rebuildClipboardRows() {
-        clipboardRows = clipboardItems.mapIndexed { index, text ->
-            // Display label only — pasting goes through the index, so the
-            // full text stays in the IME's history untouched.
-            val label = text.replace('\n', ' ').let {
-                if (it.length > CLIP_LABEL_MAX_CHARS) it.take(CLIP_LABEL_MAX_CHARS) + "…" else it
+        // Two items per row, newest first. Display label only — pasting goes
+        // through the index, so the full text stays in the IME's history.
+        clipboardRows = clipboardItems
+            .mapIndexed { index, text -> index to text }
+            .chunked(2)
+            .map { pair ->
+                pair.map { (index, text) ->
+                    val label = text.replace('\n', ' ').let {
+                        if (it.length > CLIP_LABEL_MAX_CHARS) it.take(CLIP_LABEL_MAX_CHARS) + "…" else it
+                    }
+                    KeyDef(label, null, index = index, keyType = KeyType.CLIPBOARD_ITEM)
+                }
             }
-            listOf(KeyDef(label, null, index = index, keyType = KeyType.CLIPBOARD_ITEM))
-        }
     }
 
     /** True when the touch x falls in the per-item dismiss (✕) zone. */
@@ -585,19 +589,26 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     private fun drawKey(canvas: Canvas, key: KeyDef, pressed: Boolean) {
-        val l = key.left + 2f
-        val t = key.top + 2f
-        val r = key.right - 2f
-        val b = key.bottom - 2f
+        // Inset every key so the background shows through as a gap (larger
+        // vertically than horizontally, mirroring the reference spacing).
+        val padX = KEY_PAD_X_DP * resources.displayMetrics.density
+        val padY = KEY_PAD_Y_DP * resources.displayMetrics.density
+        val l = key.left + padX
+        val t = key.top + padY
+        val r = key.right - padX
+        val b = key.bottom - padY
         val rect = RectF(l, t, r, b)
 
-        // Background
-        canvas.drawRoundRect(
-            rect, cornerRadius, cornerRadius,
-            if (pressed) keyBgPressedPaint else keyBgPaint
-        )
-        // Border
-        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, keyBorderPaint)
+        // Modifier keys (shift, backspace, layer/return) get a darker fill;
+        // characters and the space bar use the standard key fill. No border.
+        val bg = when {
+            pressed -> keyBgPressedPaint
+            key.keyType == KeyType.SPACE ||
+                key.keyType == KeyType.CHARACTER ||
+                key.keyType == KeyType.CLIPBOARD_ITEM -> keyBgPaint
+            else -> keyBgModifierPaint
+        }
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, bg)
 
         val cx = key.left + (key.right - key.left) / 2f
         val cy = key.top + (key.bottom - key.top) / 2f
@@ -623,7 +634,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         val fabPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             // Accent orange (same as the vowel accent) stands out from the
             // grey key background.
-            color = vowelTextPaint.color
+            color = toneTextPaint.color
             setShadowLayer(3f * density, 0f, 1.5f * density, 0x80000000.toInt())
         }
         canvas.drawCircle(cx, cy, r, fabPaint)
@@ -671,24 +682,33 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     private fun drawCharacterKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
-        val primaryPaint = if (key.isVowel) vowelTextPaint else primaryTextPaint
-        val kw = key.right - key.left
+        val primaryPaint = if (key.isTone) toneTextPaint else primaryTextPaint
+        // Corner labels sit deeper inside the key than the drawn border, so
+        // wide glyphs never poke out past the left/right edges.
+        val padX = (KEY_PAD_X_DP + KEY_CORNER_PAD_DP) * resources.displayMetrics.density
 
-        // Primary (top-left quadrant). Labels are lowercase by default and
-        // follow the shift latch; the KeyDef literals themselves stay uppercase.
+        // Primary pinned to the top-left corner on every character key, with
+        // or without a secondary. Left-aligned from the key edge so wide
+        // glyphs never spill past the border. Labels are lowercase by default
+        // and follow the shift latch; the KeyDef literals themselves stay
+        // uppercase.
+        primaryPaint.textAlign = Paint.Align.LEFT
         canvas.drawText(
             resolveCase(key.primary.lowercase()),
-            cx - kw * 0.22f,
-            cy - keyHeight * 0.12f,
+            key.left + padX,
+            key.top + keyHeight * 0.38f,
             primaryPaint
         )
 
-        // Secondary (bottom-right quadrant) — only if present
+        // Secondary (double-tap) pinned to the bottom-right corner,
+        // right-aligned from the key edge. Baseline raised a bit so
+        // descender glyphs (g y p q ,) clear the key bottom — only if present.
         if (key.secondary != null) {
+            secondaryTextPaint.textAlign = Paint.Align.RIGHT
             canvas.drawText(
                 resolveCase(key.secondary.lowercase()),
-                cx + kw * 0.22f,
-                cy + keyHeight * 0.22f,
+                key.right - padX,
+                key.bottom - keyHeight * 0.22f,
                 secondaryTextPaint
             )
         }
@@ -707,12 +727,11 @@ class MiniKeyboardView(context: Context) : View(context) {
 
         // Pressed state bg for shift when active
         if (key.keyType == KeyType.SHIFT && shiftActive) {
-            val l = key.left + 2f
-            val t = key.top + 2f
-            val r = key.right - 2f
-            val b = key.bottom - 2f
+            val padX = KEY_PAD_X_DP * resources.displayMetrics.density
+            val padY = KEY_PAD_Y_DP * resources.displayMetrics.density
             canvas.drawRoundRect(
-                RectF(l, t, r, b), cornerRadius, cornerRadius,
+                RectF(key.left + padX, key.top + padY, key.right - padX, key.bottom - padY),
+                cornerRadius, cornerRadius,
                 keyBgPressedPaint
             )
         }
@@ -1055,6 +1074,27 @@ class MiniKeyboardView(context: Context) : View(context) {
     }
 
     companion object {
+        /** Keyboard background fills — shared with the IME so the system
+         *  navigation bar can be tinted to match (MiniKeyboardIME). */
+        const val DARK_BG_COLOR = 0xFF292E32.toInt()
+        const val LIGHT_BG_COLOR = 0xFFD5D9DE.toInt()
+
+        /** Resolve dark/light from the theme pref (system by default).
+         *  Shared with the IME for the navigation-bar tint. */
+        fun resolveDarkThemeFor(context: Context): Boolean =
+            when (context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+                .getInt(Prefs.KEY_THEME_MODE, Prefs.THEME_SYSTEM)) {
+                Prefs.THEME_LIGHT -> false
+                Prefs.THEME_DARK  -> true
+                else              -> (context.resources.configuration.uiMode and
+                    Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+            }
+
+        /** Background fill for the given theme — also tints the system
+         *  navigation bar so the strip below the keyboard matches. */
+        fun backgroundColor(dark: Boolean): Int =
+            if (dark) DARK_BG_COLOR else LIGHT_BG_COLOR
+
         private const val LONG_PRESS_MS = 350L
         private const val BACKSPACE_INITIAL_DELAY_MS = 400L
         private const val BACKSPACE_REPEAT_MS = 60L
@@ -1063,8 +1103,20 @@ class MiniKeyboardView(context: Context) : View(context) {
         private const val HANDLE_PILL_WIDTH_DP = 40f
         private const val HANDLE_PILL_HEIGHT_DP = 4f
 
-        /** Row 3 (control row) is 75% of the standard row height. */
-        private const val ROW3_HEIGHT_RATIO = 0.75f
+        /** Key inset per side (dp): the background gap between keys. Wider
+         *  vertically than horizontally, mirroring the reference spacing. */
+        private const val KEY_PAD_X_DP = 1.5f
+        private const val KEY_PAD_Y_DP = 2.5f
+
+        /** Extra inset for corner labels so glyphs clear the key edges (dp). */
+        private const val KEY_CORNER_PAD_DP = 4f
+
+        /** Side margin between the keyboard rows and the window edges (dp). */
+        private const val KEY_MARGIN_DP = 7f
+
+        /** Row 3 (control row) is 82.5% of the standard row height (75% plus
+         *  a 10% bump). */
+        private const val ROW3_HEIGHT_RATIO = 0.825f
 
         /** Max chars of a clipboard item shown on the list row (display only;
          *  keeps the label clear of the dismiss button). */

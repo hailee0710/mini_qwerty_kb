@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.inputmethodservice.InputMethodService
+import android.os.Build
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -33,6 +34,13 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
     // ── Composing state ──────────────────────────────────────────────────
     /** Raw character buffer for the current Telex word. */
     private val rawBuffer = StringBuilder()
+
+    /** True when the last composing display showed the raw buffer verbatim
+     *  (an English word that fell back to literal). Backspace then keeps the
+     *  literal prefix instead of re-applying the tone the popped character
+     *  had visually undone — "lantern" deletes back through "lanter", never
+     *  jumping to "lảnte". */
+    private var composingShowsRaw = false
 
     /** Editor capabilities from the last [onStartInput]. */
     private var editorInfo: EditorInfo? = null
@@ -78,8 +86,13 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
                 smartTelexEnabled = getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
                     .getBoolean(Prefs.KEY_SMART_TELEX_ENABLED, true)
             }
-            Prefs.KEY_THEME_MODE, Prefs.KEY_HAPTIC_ENABLED,
-            Prefs.KEY_DOUBLE_TAP_MS -> {
+            Prefs.KEY_THEME_MODE -> {
+                if (::keyboardView.isInitialized) {
+                    keyboardView.refreshTheme()
+                }
+                applyNavigationBarColor()
+            }
+            Prefs.KEY_HAPTIC_ENABLED, Prefs.KEY_DOUBLE_TAP_MS -> {
                 if (::keyboardView.isInitialized) {
                     keyboardView.refreshTheme()
                 }
@@ -120,6 +133,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         editorInfo = info
         // Re-apply user theme/height preferences (may have changed in settings).
         keyboardView.refreshTheme()
+        applyNavigationBarColor()
         // Every new input session starts on the letters layer — the previous
         // layer (numeric/clipboard) is not remembered.
         keyboardView.resetLayer()
@@ -140,6 +154,26 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         rawBuffer.clear()
     }
 
+    /**
+     * Paint the system navigation bar (the strip below the keyboard holding the
+     * gesture pill) with the keyboard's own background color. `getWindow()`
+     * returns the SoftInputWindow (a Dialog); the second call reaches the
+     * underlying PhoneWindow that exposes the nav-bar APIs. On API 29+ the
+     * default contrast scrim is disabled so the color shows exactly.
+     */
+    private fun applyNavigationBarColor() {
+        val win = window?.window ?: return
+        val bg = MiniKeyboardView.backgroundColor(
+            MiniKeyboardView.resolveDarkThemeFor(this))
+        win.setNavigationBarColor(bg)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            win.navigationBarDividerColor = bg
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            win.isNavigationBarContrastEnforced = false
+        }
+    }
+
     override fun onStartInput(info: EditorInfo, restarting: Boolean) {
         super.onStartInput(info, restarting)
         editorInfo = info
@@ -151,6 +185,7 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         if (::keyboardView.isInitialized) {
             keyboardView.refreshTheme()
         }
+        applyNavigationBarColor()
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -207,7 +242,19 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         if (rawBuffer.isNotEmpty()) {
             // Remove last character from raw buffer
             rawBuffer.deleteCharAt(rawBuffer.lastIndex)
-            updateComposingText()
+            if (composingShowsRaw) {
+                // The buffer was displayed literally (English fallback) —
+                // keep the raw prefix literal so the tone the popped char
+                // visually undid does not snap back.
+                if (rawBuffer.isEmpty()) {
+                    ic.setComposingText("", 0)
+                    composingShowsRaw = false
+                } else {
+                    ic.setComposingText(rawBuffer.toString(), 1)
+                }
+            } else {
+                updateComposingText()
+            }
         } else {
             // No composing text — delegate to the target app
             ic.deleteSurroundingText(1, 0)
@@ -427,12 +474,14 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
         if (rawBuffer.isEmpty()) {
             // Clear any stale composing span
             ic.setComposingText("", 0)
+            composingShowsRaw = false
             return
         }
         // Live composing display: shape validation only, no dictionary —
         // the commit-time check corrects the final word (Gboard-style).
         val resolved = TelexProcessor.resolve(
             rawBuffer.toString(), smart = smartTelexEnabled, dict = null)
+        composingShowsRaw = resolved == rawBuffer.toString()
         ic.setComposingText(resolved, 1)
     }
 
