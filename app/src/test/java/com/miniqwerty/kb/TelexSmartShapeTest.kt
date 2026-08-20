@@ -34,6 +34,13 @@ class TelexSmartShapeTest {
         assertEquals("đư", TelexProcessor.resolve("dduw", smart = true))
     }
 
+    @Test fun `standalone consonant word passes shape and dict`() {
+        // "dd" → đ — the only Vietnamese word with no vowel. The lone onset
+        // must pass shape validation or smart mode falls back to "dd".
+        assertEquals("đ", TelexProcessor.resolve("dd", smart = true))
+        assertEquals("đ", TelexProcessor.resolve("dd", smart = true, dict = setOf("đ")))
+    }
+
     // ── Dictionary fallback ──────────────────────────────────────────────
 
     @Test fun `resolved word missing from the dict falls back to raw`() {

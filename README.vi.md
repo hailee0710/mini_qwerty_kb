@@ -11,6 +11,7 @@ Bàn phím QWERTY 3 hàng gọn nhẹ cho Android (IME) tích hợp sẵn bộ g
 - **QWERTY 3 hàng gọn** — 9 chữ cái hiếm nhất là phím phụ (chạm hai lần nhanh) nằm đúng vị trí QWERTY quen thuộc; phím dấu `X S F R J` đặt nơi người gõ Telex mong đợi.
 - **Hàng số/ký tự** kèm ký tự phụ khi chạm hai lần.
 - **Giao diện sáng/tối/theo hệ thống**, tùy chọn rung, kéo để chỉnh độ cao bàn phím, tùy chỉnh cửa sổ chạm đúp.
+- **Độ chính xác khi gõ** — vùng nhấn tính theo phím gần nhất kèm bù vị trí ngón cái, rung ngay khi chạm, xử lý đa chạm để gõ nhanh không mất phím.
 - **Không cần quyền đặc biệt** — không có gì để cấp, không có gì để lộ.
 
 ## Cài đặt
@@ -58,7 +59,7 @@ Các trường hợp không xử lý được (giống auto-restore của ibus-b
 - **Hàng 3:** shift, `123`, cách, enter.
 - **Hàng số:** chữ số, `@ ! % : ) - ? = / ]` kèm ký tự phụ `~ # $ & ( _ + ; ' [`; cùng `.` và `📋` (clipboard).
 
-Chạm nhanh hai lần vào phím sẽ thay ký tự cuối bằng ký tự phụ của phím đó. Giữ lâu (350 ms) hoặc vuốt xuống để gõ ký tự phụ. Giữ phím xóa để xóa liên tục.
+Chạm nhanh hai lần vào phím sẽ thay ký tự cuối bằng ký tự phụ của phím đó. Giữ lâu (350 ms) hoặc vuốt xuống dứt khoát để gõ ký tự phụ. Chạm đúp Shift để bật caps lock (⇪). Giữ phím xóa để xóa liên tục. Gõ nhanh an toàn: hai phím chạm chồng nhau (ngón sau chạm trước khi ngón trước nhấc) vẫn gõ được cả hai, và ngón cái trượt nhẹ khi chạm sẽ không kích hoạt vuốt hay chạm đúp.
 
 ## Cài đặt
 

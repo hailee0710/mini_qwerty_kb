@@ -45,9 +45,9 @@ Source files, each with one clear job:
 
 The IME keeps a raw character buffer (`rawBuffer`) for the current word. Every keystroke appends to it and calls `TelexProcessor.resolve()` on the **entire buffer** (the processor is stateless and re-resolves from scratch each time), then shows the result via `InputConnection.setComposingText()`. The resolved text is committed on space/return/`shouldCommit` punctuation (`. , ! ? : ; …` plus whitespace) and on explicit user actions (`onCursorMove`, numeric-layer `onDirectCharacter`) via `commitBuffer`, which commits unconditionally — editors that fail to report composing partial offsets must not lose the visible word. Only lifecycle commits (`onStartInputView`/`onFinishInputView`) are conditional on the editor still holding a composing region (`editorHasComposingRegion` probes `ExtractedText` partial offsets): if an app cleared the field while composing (e.g. chat send button), the stale buffer is dropped instead of re-inserted. Space-bar long-press is a cursor mode: horizontal drag moves the caret via `onCursorMove` (commits pending word first). Backspace removes the last raw character from the buffer rather than deleting from the editor; only when the buffer is empty does it delegate to `deleteSurroundingText`. `onReplaceCharacter` pops the last raw char and re-appends its replacement (double-tap); `onDirectCharacter` commits pending text and inserts the character directly (numeric layer). Numeric-layer double-tap uses `onReplaceDirectCharacter`: the first tap committed the digit directly, so the editor deletes it (`deleteSurroundingText`) and inserts the symbol.
 
-Shift is latched (one character), not held: `MiniKeyboardView` uppercases the character before calling `onCharacter`, then auto-releases.
+Shift is latched (one character), not held: `MiniKeyboardView` uppercases the character before calling `onCharacter`, then auto-releases. Double-tapping Shift toggles sticky caps lock (`capsLockActive`, drawn as ⇪).
 
-Quick double-tap on the same key replaces the last raw buffer character with the key's secondary character. The window is user-adjustable in settings (`Prefs.KEY_DOUBLE_TAP_MS`, 100–500 ms, default 200). Backspace repeats while held: initial delay 400 ms, then every 60 ms.
+Quick double-tap on the same key replaces the last raw buffer character with the key's secondary character. The window is user-adjustable in settings (`Prefs.KEY_DOUBLE_TAP_MS`, 100–500 ms, default 200). The second tap must be clean (no drift beyond the touch slop) to count as a double-tap — a moved finger is a new gesture. Backspace repeats while held: initial delay 400 ms, then every 60 ms.
 
 Hard keys also flow through the Telex pipeline: `onKeyDown` intercepts DEL/ENTER/SPACE and routes printable characters into `onCharacter`.
 
@@ -65,17 +65,27 @@ Documented limitations (same shape as ibus-bamboo's auto-restore): `door` → `d
 
 ### Keyboard layout
 
-Defined as `List<List<KeyDef>>` literals in `MiniKeyboardView` — `letterKeys` and `numericKeys`, switched by `currentLayer`. Each key has a `primary` and optional `secondary` character: tap commits primary, quick double-tap replaces it with the secondary letter, swipe-down or long-press (350 ms) commits the secondary. Character keys without a secondary (vowels) have no secondary action.
+Defined as `List<List<KeyDef>>` literals in `MiniKeyboardView` — `letterKeys` and `numericKeys`, switched by `currentLayer`. Each key has a `primary` and optional `secondary` character: tap commits primary, quick double-tap replaces it with the secondary letter, a downward flick that clearly leaves the key or a long-press (350 ms) commits the secondary. Character keys without a secondary (vowels) have no secondary action.
 
 Letters layer, 3 rows. Row 1 is 10 columns — `X(Q) W(?) E R T H(Y) U I(P) O ,(.)` — comma on top, dot below it. Row 2 is 9.5 units: `A S(Z) D F(C) G(V) N(B) J(K) M(L)` at 1 unit each plus ⌫ at 1.5. The row pins to row 1's 10-unit grid and centers itself — letters keep row 1's width exactly, a 0.25-unit margin remains on each side, and the slight offset against row 1 gives a natural staggered typing feel. The layout is QWERTY-familiar by design: `tools/layout_analyzer.py` optimizes effort + λ·displacement from each letter's QWERTY home (λ=0.5), so every key sits at or next to its QWERTY position and the 9 rarest letters (Q Y P Z C V B K L) become double-tap secondaries on the key nearest their QWERTY home. Tone keys X, S, F, R, J sit where Vietnamese Telex typists expect them. A, E, O, D sit on keys without secondaries so the Telex same-key digraphs `aa ee oo dd` stay typeable via quick double-press. Row 3 uses fractional `widthUnits` spans (shift 1.5, `123` 1, space 5, return 1.5) and is 75% of the standard row height (`effectiveRows` = row count − 1 + 0.75, so both 3-row layers measure 2.75 row-units; the clipboard layer uses the letters-layer count to keep the window height stable). `123` switches to the numeric layer; `ABC` switches back.
 
 Numeric layer: row 1 is 10 digits with no secondaries — `1 2 3 4 5 6 7 8 9 0`. Row 2 is 11 units of frequent symbols plus ⌫: `@ ! % : ) - ? = / ]` with double-tap secondaries `~ # $ & ( _ + ; ' [` (`(` under `)`, `[` under `]`, `&` under `:`). Row 3 spans `ABC` (1.5), space (6), `📋` (1), `.` (1, `,` double-tap), `⏎` (1.5) — 11 total units so the dot matches the row-2 key width. Numeric-layer characters commit directly via `onDirectCharacter` (bypass the Telex buffer). Rare symbols (`` ` \ | " < > { } ^ * ``) are intentionally unavailable on the numeric layer.
 
+### Touch handling
+
+`MiniKeyboardView` tracks one active pointer (`activePointerId`) and reads every event through that pointer's coordinates. Multi-touch is handled deliberately: fast typing overlaps taps, so when a second finger lands (`ACTION_POINTER_DOWN`) the in-flight gesture is finalized immediately (its tap commits) and tracking rebinds to the new pointer — a key is never lost to an unhandled `ACTION_POINTER_UP`. `beginGesture`/`commitGesture` factor the down/up logic; an unrelated finger lifting is a no-op.
+
+Hit testing is nearest-center with a circular sweet spot per key: radius = half the key's bounding-box diagonal × `HIT_RADIUS_FACTOR` (1.08), which overlaps the gaps between keys so no tap lands dead. Sweet-spot centers are offset from the visual center toward where thumbs actually land — up to `SWEET_SPOT_HEIGHT_FRACTION` (38% of key height; the contact pad sits below the aim) and row-edge keys pulled inward (`SWEET_SPOT_EDGE_PULL`). Visual centers are unchanged.
+
+On `ACTION_MOVE` beyond the touch slop, the held key re-targets to the key under the finger (`findKeyAt`), so the highlight and the released commit follow the finger; drift also cancels the long-press and swaps backspace hold-repeat accordingly. A downward flick commits the secondary only when it clearly leaves the original key — travel ≥ `swipeSlop` (2× touch slop), vertical-dominant, past the key's bottom — so a thumb roll on a normal tap cannot misfire. The swipe stays bound to `originalDownKey` (the key pressed at `ACTION_DOWN`).
+
+Haptics fire on `ACTION_DOWN` for immediate press feedback; the key still commits on release.
+
 ### Theme and sizing
 
 The view draws an opaque background (no transparent IME window) in a light or dark palette. Theme mode is user-selectable via `Prefs.KEY_THEME_MODE` (system / light / dark, default system); `MiniKeyboardView.resolveDarkTheme()` resolves the pref and `refreshTheme()` reapplies colors. The IME calls `refreshTheme()` on configuration change and every `onStartInputView`, so settings changes apply to the next keyboard window. A drag handle strip (14 dp) at the top resizes the keyboard: dragging changes `rowHeightDp` (clamped 30–75 dp, default 46), persisted in `Prefs.KEY_ROW_HEIGHT_DP`, applied on the next `onMeasure`.
 
-Key presses vibrate via `performHapticFeedback` (`KEYBOARD_TAP`, `LONG_PRESS` on long-press fire) when `Prefs.KEY_HAPTIC_ENABLED` is on (default). The toggle is re-read in `refreshTheme()` so settings changes apply live.
+Key presses vibrate via `performHapticFeedback` on `ACTION_DOWN` (`KEYBOARD_TAP`; `LONG_PRESS` fires separately on long-press) when `Prefs.KEY_HAPTIC_ENABLED` is on (default). The toggle is re-read in `refreshTheme()` so settings changes apply live.
 
 ### IME wiring
 

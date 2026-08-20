@@ -11,7 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import kotlin.math.abs
-import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Listener dispatched by [MiniKeyboardView] when the user triggers a key action.
@@ -83,6 +83,14 @@ class MiniKeyboardView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** Whether caps lock is on (double-tap on Shift) — every primary letter
+     *  stays uppercase until toggled off. */
+    var capsLockActive: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     // ── Persisted preferences ────────────────────────────────────────────
     private val prefs = context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
 
@@ -96,7 +104,6 @@ class MiniKeyboardView(context: Context) : View(context) {
     // ── Dimensions (set during onSizeChanged) ─────────────────────────────
     private var viewWidth: Int = 0
     private var viewHeight: Int = 0
-    private var keyWidth: Float = 0f
     private var keyHeight: Float = 0f
     private var handleHeightPx: Float = 0f
 
@@ -113,12 +120,25 @@ class MiniKeyboardView(context: Context) : View(context) {
     private var currentLayer: KeyboardLayer = KeyboardLayer.LETTERS
 
     // ── Touch-tracking state ──────────────────────────────────────────────
+    /** The pointer this keyboard is currently tracking. Multi-touch aware:
+     *  fast typing overlaps taps, so each new pointer finalizes the previous
+     *  gesture and becomes the tracked one. */
+    private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
     private var downKey: KeyDef? = null
+    /** Key pressed at ACTION_DOWN — swipe-to-secondary stays bound to it even
+     *  when [downKey] is re-targeted to a neighbor during the move. */
+    private var originalDownKey: KeyDef? = null
     private var downX: Float = 0f
     private var downY: Float = 0f
     private var isSwipeDetected: Boolean = false
     private var longPressTriggered: Boolean = false
+    /** True when the current gesture moved beyond the touch slop — keeps a
+     *  drifting finger from triggering a double-tap secondary. */
+    private var tapMoved: Boolean = false
     private val touchSlop: Int = ViewConfiguration.get(context).scaledTouchSlop
+    /** A downward flick must clear this much travel (and exit the key) before
+     *  it counts as a swipe — a thumb roll on a normal tap must not. */
+    private val swipeSlop: Int = touchSlop * 2
 
     // Space-bar cursor mode: after long-pressing space, horizontal drag moves
     // the text cursor. cursorPxPerChar maps finger dx to character steps.
@@ -132,6 +152,9 @@ class MiniKeyboardView(context: Context) : View(context) {
     // Double-tap state: second quick tap on the same key emits its secondary.
     private var lastTapKey: KeyDef? = null
     private var lastTapTime: Long = 0L
+    /** Shift state at the first tap — the primary commit consumes the latch,
+     *  so the second (double-tap) tap must carry the same case forward. */
+    private var lastTapShiftActive: Boolean = false
 
     // Backspace repeat state.
     private val repeatHandler = Handler(Looper.getMainLooper())
@@ -160,6 +183,9 @@ class MiniKeyboardView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
+    /** Shift key glyph while caps lock is on — same bold size as the function
+     *  labels, drawn in the orange accent. */
+    private val capsLockTextPaint = Paint(functionBoldTextPaint)
     private val clipboardItemTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.LEFT
     }
@@ -200,6 +226,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             keyBgPressedPaint.color = 0xFF5A5F64.toInt()
             primaryTextPaint.color = 0xFFFFFFFF.toInt()
             toneTextPaint.color = 0xFFFF8A50.toInt() // orange accent
+            capsLockTextPaint.color = 0xFFFF8A50.toInt() // orange accent
             secondaryTextPaint.color = 0xFF8F8F8F.toInt()
             functionTextPaint.color = 0xFFFFFFFF.toInt()
             functionBoldTextPaint.color = 0xFFFFFFFF.toInt()
@@ -212,6 +239,7 @@ class MiniKeyboardView(context: Context) : View(context) {
             keyBgPressedPaint.color = 0xFFCFD3D7.toInt()
             primaryTextPaint.color = 0xFF2A2A2A.toInt()
             toneTextPaint.color = 0xFFE65100.toInt() // orange accent
+            capsLockTextPaint.color = 0xFFE65100.toInt() // orange accent
             secondaryTextPaint.color = 0xFF8A8A8A.toInt()
             functionTextPaint.color = 0xFF4A4A4A.toInt()
             functionBoldTextPaint.color = 0xFF4A4A4A.toInt()
@@ -365,7 +393,6 @@ class MiniKeyboardView(context: Context) : View(context) {
         val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS.toFloat()
                    else effectiveRows(keys.size)
         keyHeight = (h - handleHeightPx) / rows
-        keyWidth = w.toFloat() / rows  // rough default for hit padding
 
         // Size text paints proportionally
         primaryTextPaint.textSize = keyHeight * 0.34f
@@ -374,6 +401,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         secondaryTextPaint.textSize = keyHeight * 0.34f
         functionTextPaint.textSize = keyHeight * 0.26f
         functionBoldTextPaint.textSize = keyHeight * 0.30f
+        capsLockTextPaint.textSize = keyHeight * 0.30f
 
         // Large rounded corners, scaled to the key height (the reference look:
         // flat keys with a generous radius).
@@ -703,6 +731,7 @@ class MiniKeyboardView(context: Context) : View(context) {
         // Secondary (double-tap) pinned to the bottom-right corner,
         // right-aligned from the key edge. Baseline raised a bit so
         // descender glyphs (g y p q ,) clear the key bottom — only if present.
+        // The label follows the shift/caps state like the primary.
         if (key.secondary != null) {
             secondaryTextPaint.textAlign = Paint.Align.RIGHT
             canvas.drawText(
@@ -716,7 +745,7 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     private fun drawFunctionKey(canvas: Canvas, key: KeyDef, cx: Float, cy: Float) {
         val text = when (key.keyType) {
-            KeyType.SHIFT     -> "⇧"
+            KeyType.SHIFT     -> if (capsLockActive) "⇪" else "⇧"
             KeyType.BACKSPACE -> "⌫"
             KeyType.NUMERIC   -> "123"
             KeyType.ABC       -> "ABC"
@@ -725,8 +754,8 @@ class MiniKeyboardView(context: Context) : View(context) {
             else              -> key.primary
         }
 
-        // Pressed state bg for shift when active
-        if (key.keyType == KeyType.SHIFT && shiftActive) {
+        // Pressed-state bg for shift while latched OR locked on.
+        if (key.keyType == KeyType.SHIFT && (shiftActive || capsLockActive)) {
             val padX = KEY_PAD_X_DP * resources.displayMetrics.density
             val padY = KEY_PAD_Y_DP * resources.displayMetrics.density
             canvas.drawRoundRect(
@@ -737,10 +766,12 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
 
         if (text.isNotEmpty()) {
-            val paint = if (key.keyType == KeyType.SHIFT || key.keyType == KeyType.RETURN) {
-                functionBoldTextPaint
-            } else {
-                functionTextPaint
+            // Caps lock draws the ⇪ glyph in the orange accent — visually
+            // distinct from the one-character latch.
+            val paint = when {
+                key.keyType == KeyType.SHIFT && capsLockActive -> capsLockTextPaint
+                key.keyType == KeyType.SHIFT || key.keyType == KeyType.RETURN -> functionBoldTextPaint
+                else -> functionTextPaint
             }
             // Per-key height keeps labels centered on the shorter row 3.
             val rowH = key.bottom - key.top
@@ -750,9 +781,10 @@ class MiniKeyboardView(context: Context) : View(context) {
         // Space bar is deliberately unlabeled — a wide blank key.
     }
 
-    /** Apply shift state: uppercase the first char of [s]. */
+    /** Apply shift/caps-lock case: uppercase the first char of [s]. Applies to
+     *  both the primary label and the secondary (double-tap) label. */
     private fun resolveCase(s: String): String {
-        if (!shiftActive || s.isEmpty()) return s
+        if ((!shiftActive && !capsLockActive) || s.isEmpty()) return s
         val first = s[0]
         return if (first.isLowerCase()) first.uppercaseChar() + s.substring(1)
         else s
@@ -768,59 +800,47 @@ class MiniKeyboardView(context: Context) : View(context) {
                 if (event.y < handleHeightPx) {
                     // Drag the handle strip to resize the keyboard.
                     dragActive = true
+                    activePointerId = event.getPointerId(0)
                     dragStartY = event.y
                     dragStartRowDp = rowHeightDp
                     invalidate()
                     return true
                 }
 
-                downKey = findKeyAt(event.x, event.y)
-                downX = event.x
-                downY = event.y
-                isSwipeDetected = false
-                longPressTriggered = false
-                spaceCursorMode = false
-                lastCursorChars = 0
+                beginGesture(event.getPointerId(0), event.x, event.y)
+                invalidate()
+                return true
+            }
 
-                if (downKey?.keyType == KeyType.BACKSPACE) {
-                    // Hold-to-repeat instead of long-press secondary.
-                    scheduleBackspaceRepeat()
-                } else if (downKey?.keyType == KeyType.CLIPBOARD_ITEM) {
-                    // No long-press: item rows are for tap-to-paste and
-                    // drag-to-scroll; a long-press pasting mid-scroll would
-                    // be accidental.
-                } else {
-                    longPressRunnable = Runnable {
-                        if (downKey != null && !isSwipeDetected && !longPressTriggered) {
-                            longPressTriggered = true
-                            haptic(HapticFeedbackConstants.LONG_PRESS)
-                            lastTapKey = null
-                            if (downKey?.keyType == KeyType.SPACE) {
-                                // Long-press space enters cursor mode; the key
-                                // stays pressed and drags move the cursor.
-                                spaceCursorMode = true
-                                lastCursorChars = 0
-                            } else {
-                                commitSecondary(downKey!!, replace = false)
-                                downKey = null
-                            }
-                            invalidate()
-                        }
-                    }
-                    longPressHandler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
-                }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // A second finger landed. Fast typing overlaps taps, so the
+                // framework reports the first finger's lift as ACTION_POINTER_UP
+                // instead of ACTION_UP — finalize the first gesture now (before
+                // that lift is lost) and rebind tracking to the new pointer.
+                if (dragActive) return true
+                val idx = event.findPointerIndex(activePointerId)
+                commitGesture(if (idx >= 0) event.getX(idx) else event.x)
+                val newIdx = event.actionIndex
+                beginGesture(event.getPointerId(newIdx), event.getX(newIdx), event.getY(newIdx))
                 invalidate()
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
+                // Track only the active pointer — a second finger (fast typing)
+                // gets its own gesture via ACTION_POINTER_DOWN.
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx < 0) return true
+                val ex = event.getX(idx)
+                val ey = event.getY(idx)
+
                 if (dragActive) {
                     val density = resources.displayMetrics.density
                     // Use the visible row count — the clipboard layer always
                     // shows its 5 compact slots even when the list is longer.
                     val rows = if (currentLayer == KeyboardLayer.CLIPBOARD) CLIPBOARD_SLOTS.toFloat()
                                else effectiveRows(keys.size)
-                    val rowDelta = (dragStartY - event.y) / density / rows
+                    val rowDelta = (dragStartY - ey) / density / rows
                     rowHeightDp = (dragStartRowDp + rowDelta)
                         .coerceIn(Prefs.ROW_HEIGHT_MIN_DP, Prefs.ROW_HEIGHT_MAX_DP)
                     requestLayout()
@@ -831,7 +851,7 @@ class MiniKeyboardView(context: Context) : View(context) {
                     // Cursor mode: horizontal finger position maps to a cursor
                     // offset from the touch-down point, one step per
                     // cursorPxPerChar. Emit only the delta since last step.
-                    val dx = event.x - downX
+                    val dx = ex - downX
                     val chars = Math.round(dx / cursorPxPerChar)
                     if (chars != lastCursorChars) {
                         haptic(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -844,14 +864,14 @@ class MiniKeyboardView(context: Context) : View(context) {
 
                 if (downKey?.keyType == KeyType.CLIPBOARD_ITEM) {
                     // Drag vertically on an item row to scroll the list.
-                    val dy = event.y - downY
+                    val dy = ey - downY
                     if (!clipboardScrollActive && abs(dy) > touchSlop) {
                         clipboardScrollActive = true
-                        clipboardScrollStartY = event.y
+                        clipboardScrollStartY = ey
                         clipboardScrollStartPx = clipboardScrollPx
                     }
                     if (clipboardScrollActive) {
-                        clipboardScrollPx = (clipboardScrollStartPx - (event.y - clipboardScrollStartY))
+                        clipboardScrollPx = (clipboardScrollStartPx - (ey - clipboardScrollStartY))
                             .coerceIn(0f, clipboardMaxScrollPx)
                         layoutKeys()
                         invalidate()
@@ -861,11 +881,40 @@ class MiniKeyboardView(context: Context) : View(context) {
 
                 if (downKey == null || longPressTriggered) return true
 
-                val dy = event.y - downY
-                // Require vertical movement > touch slop AND vertical dominates horizontal
-                if (dy > touchSlop && dy > abs(event.x - downX)) {
-                    isSwipeDetected = true
-                    longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                val dx = ex - downX
+                val dy = ey - downY
+
+                // Swipe-to-secondary: a downward flick that clearly leaves the
+                // original key, vertical travel dominating horizontal. Bound to
+                // the key pressed at ACTION_DOWN so re-targeting can't hijack it.
+                if (!isSwipeDetected) {
+                    val orig = originalDownKey
+                    if (orig?.secondary != null &&
+                        dy > swipeSlop && dy > abs(dx) && ey > orig.bottom
+                    ) {
+                        isSwipeDetected = true
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                    }
+                }
+
+                if (!isSwipeDetected) {
+                    // Re-target to the key under the finger once drift exceeds
+                    // the slop, so the highlight and the released key follow it.
+                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                        tapMoved = true
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                        if (downKey?.keyType == KeyType.BACKSPACE) {
+                            backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
+                            backspaceRepeatActive = false
+                        }
+                        val target = findKeyAt(ex, ey)
+                        if (target != null && target !== downKey) {
+                            downKey = target
+                            if (target.keyType == KeyType.BACKSPACE) {
+                                scheduleBackspaceRepeat()
+                            }
+                        }
+                    }
                 }
                 invalidate()
                 return true
@@ -874,65 +923,145 @@ class MiniKeyboardView(context: Context) : View(context) {
             MotionEvent.ACTION_UP -> {
                 if (dragActive) {
                     dragActive = false
+                    activePointerId = MotionEvent.INVALID_POINTER_ID
                     prefs.edit().putFloat(Prefs.KEY_ROW_HEIGHT_DP, rowHeightDp).apply()
                     invalidate()
                     return true
                 }
 
-                longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
-                backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
-
-                val key = downKey
-                if (key != null && !longPressTriggered) {
-                    if (key.keyType == KeyType.BACKSPACE) {
-                        // Released before the repeat kicked in → single delete.
-                        if (!backspaceRepeatActive) {
-                            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-                            onKeyActionListener?.onBackspace()
-                        }
-                    } else if (isSwipeDetected) {
-                        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-                        lastTapKey = null
-                        commitSecondary(key, replace = false)
-                    } else if (key.keyType == KeyType.CLIPBOARD_ITEM) {
-                        if (clipboardScrollActive) {
-                            // Scroll gesture, not a tap — keep the position.
-                        } else {
-                            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-                            if (isInDismissZone(key, event.x)) {
-                                onKeyActionListener?.onClipboardDismiss(key.index)
-                            } else {
-                                onKeyActionListener?.onClipboardItem(key.index)
-                            }
-                        }
-                    } else {
-                        handleQuickTap(key)
-                    }
-                }
-
-                backspaceRepeatActive = false
-                spaceCursorMode = false
-                clipboardScrollActive = false
-                lastCursorChars = 0
-                downKey = null
+                val idx = event.findPointerIndex(activePointerId)
+                commitGesture(if (idx >= 0) event.getX(idx) else event.x)
                 invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Only the tracked pointer's release matters. An unrelated
+                // finger lifting was already finalized when it was displaced.
+                if (event.getPointerId(event.actionIndex) == activePointerId) {
+                    val idx = event.findPointerIndex(activePointerId)
+                    commitGesture(if (idx >= 0) event.getX(idx) else event.x)
+                    invalidate()
+                }
                 return true
             }
 
             MotionEvent.ACTION_CANCEL -> {
                 dragActive = false
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
                 backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
                 backspaceRepeatActive = false
                 spaceCursorMode = false
                 clipboardScrollActive = false
                 lastCursorChars = 0
+                tapMoved = false
+                originalDownKey = null
                 downKey = null
                 invalidate()
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    /**
+     * Start tracking a new gesture for [pointerId] at (x, y): capture the key,
+     * fire the press haptic immediately, and arm long-press / backspace repeat.
+     */
+    private fun beginGesture(pointerId: Int, x: Float, y: Float) {
+        activePointerId = pointerId
+        originalDownKey = findKeyAt(x, y)
+        downKey = originalDownKey
+        downX = x
+        downY = y
+        isSwipeDetected = false
+        longPressTriggered = false
+        spaceCursorMode = false
+        tapMoved = false
+        lastCursorChars = 0
+        // Immediate press feedback — the key still commits on release.
+        if (downKey != null) haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+
+        when (downKey?.keyType) {
+            KeyType.BACKSPACE -> {
+                // Hold-to-repeat instead of long-press secondary.
+                scheduleBackspaceRepeat()
+            }
+            KeyType.CLIPBOARD_ITEM -> {
+                // No long-press: item rows are for tap-to-paste and
+                // drag-to-scroll; a long-press pasting mid-scroll would
+                // be accidental.
+            }
+            null -> { /* no key under the touch — nothing to arm */ }
+            else -> {
+                longPressRunnable = Runnable {
+                    if (downKey != null && !isSwipeDetected && !longPressTriggered) {
+                        longPressTriggered = true
+                        haptic(HapticFeedbackConstants.LONG_PRESS)
+                        lastTapKey = null
+                        if (downKey?.keyType == KeyType.SPACE) {
+                            // Long-press space enters cursor mode; the key
+                            // stays pressed and drags move the cursor.
+                            spaceCursorMode = true
+                            lastCursorChars = 0
+                        } else {
+                            commitSecondary(downKey!!, replace = false, shifted = shiftActive)
+                            downKey = null
+                        }
+                        invalidate()
+                    }
+                }
+                longPressHandler.postDelayed(longPressRunnable!!, LONG_PRESS_MS)
+            }
+        }
+    }
+
+    /**
+     * Finalize the current gesture: remove pending callbacks and commit the
+     * held key (tap, swipe, backspace, or clipboard item). Resets all gesture
+     * state. Called on release, and when a second finger displaces this one
+     * during fast typing, so the first tap is not lost.
+     */
+    private fun commitGesture(releaseX: Float) {
+        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+        backspaceRepeatRunnable?.let { repeatHandler.removeCallbacks(it) }
+
+        val key = downKey
+        if (key != null && !longPressTriggered) {
+            when {
+                key.keyType == KeyType.BACKSPACE -> {
+                    // Released before the repeat kicked in → single delete.
+                    if (!backspaceRepeatActive) {
+                        onKeyActionListener?.onBackspace()
+                    }
+                }
+                isSwipeDetected -> {
+                    lastTapKey = null
+                    commitSecondary(originalDownKey ?: key, replace = false, shifted = shiftActive)
+                }
+                key.keyType == KeyType.CLIPBOARD_ITEM -> {
+                    if (clipboardScrollActive) {
+                        // Scroll gesture, not a tap — keep the position.
+                    } else {
+                        if (isInDismissZone(key, releaseX)) {
+                            onKeyActionListener?.onClipboardDismiss(key.index)
+                        } else {
+                            onKeyActionListener?.onClipboardItem(key.index)
+                        }
+                    }
+                }
+                else -> handleQuickTap(key)
+            }
+        }
+
+        backspaceRepeatActive = false
+        spaceCursorMode = false
+        clipboardScrollActive = false
+        lastCursorChars = 0
+        tapMoved = false
+        originalDownKey = null
+        downKey = null
     }
 
     /** Vibration on key press, gated by the user toggle. */
@@ -946,18 +1075,30 @@ class MiniKeyboardView(context: Context) : View(context) {
      * (secondary) character.
      */
     private fun handleQuickTap(key: KeyDef) {
-        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-
         val now = SystemClock.uptimeMillis()
+        // Double-tap only when the second tap is clean — a finger that drifted
+        // beyond the touch slop is a new gesture, not a deliberate double-tap.
         val isDoubleTap = (currentLayer == KeyboardLayer.LETTERS ||
             currentLayer == KeyboardLayer.NUMERIC) &&
-            key.secondary != null &&
-            key === lastTapKey && now - lastTapTime <= doubleTapMs
+            (key.secondary != null || key.keyType == KeyType.SHIFT) &&
+            key === lastTapKey && !tapMoved && now - lastTapTime <= doubleTapMs
 
         if (isDoubleTap) {
-            commitSecondary(key, replace = true)
+            if (key.keyType == KeyType.SHIFT) {
+                // Double-tap Shift locks caps on/off (sticky), clearing the
+                // one-character latch.
+                capsLockActive = !capsLockActive
+                shiftActive = false
+                onKeyActionListener?.onShift()
+            } else {
+                commitSecondary(key, replace = true, shifted = lastTapShiftActive)
+            }
             lastTapKey = null
         } else {
+            // Capture the shift state before commitPrimary — it releases the
+            // latch on a character, and the second (double-tap) tap needs the
+            // same case carried forward.
+            lastTapShiftActive = shiftActive
             commitPrimary(key)
             lastTapKey = key
             lastTapTime = now
@@ -981,6 +1122,16 @@ class MiniKeyboardView(context: Context) : View(context) {
 
     // ── Key lookup ────────────────────────────────────────────────────────
 
+    /**
+     * Find the key for a touch point using nearest-center hit testing. Every
+     * key has an effective circular sweet spot — half its bounding-box diagonal
+     * times [HIT_RADIUS_FACTOR] — which overlaps the gaps between neighbors, so
+     * taps landing on or near key borders still register (no dead zones).
+     * The sweet-spot center is offset from the visual center toward where
+     * thumbs land (see [SWEET_SPOT_HEIGHT_FRACTION], [SWEET_SPOT_EDGE_PULL]);
+     * among candidate keys the nearest center wins, biasing boundary taps
+     * toward the key the finger most likely meant.
+     */
     private fun findKeyAt(x: Float, y: Float): KeyDef? {
         // The clipboard close FAB floats above the list — hit it first.
         if (currentLayer == KeyboardLayer.CLIPBOARD) {
@@ -992,20 +1143,37 @@ class MiniKeyboardView(context: Context) : View(context) {
             val dy = y - cy
             if (dx * dx + dy * dy <= r * r) return ck
         }
+        // Outside the key area: the drag-handle strip above, or below the window.
+        if (y < handleHeightPx || y >= viewHeight) return null
+
+        var best: KeyDef? = null
+        var bestDist = Float.MAX_VALUE
         for (row in keys) {
             for (key in row) {
                 // Off-view keys (scrolled clipboard items) never hit.
                 if (key.bottom <= handleHeightPx || key.top >= viewHeight) continue
-                // Slightly expand hit area for narrow keys
-                val pad = min(keyWidth * 0.05f, 4f)
-                if (x >= key.left - pad && x <= key.right + pad &&
-                    y >= key.top  - pad && y <= key.bottom + pad
-                ) {
-                    return key
+                // Sweet-spot center, biased toward where thumbs actually land:
+                // shifted up (the contact pad lands below the aim point) and,
+                // for row-edge keys, pulled toward the screen center.
+                val kw = key.right - key.left
+                val kh = key.bottom - key.top
+                var cx = key.left + kw * 0.5f
+                if (key === row.first()) cx += kw * SWEET_SPOT_EDGE_PULL
+                if (key === row.last()) cx -= kw * SWEET_SPOT_EDGE_PULL
+                val cy = key.top + kh * SWEET_SPOT_HEIGHT_FRACTION
+                val dx = x - cx
+                val dy = y - cy
+                val rx = kw / 2f
+                val ry = kh / 2f
+                val radius = sqrt(rx * rx + ry * ry) * HIT_RADIUS_FACTOR
+                val dist = dx * dx + dy * dy
+                if (dist <= radius * radius && dist < bestDist) {
+                    best = key
+                    bestDist = dist
                 }
             }
         }
-        return null
+        return best
     }
 
     // ── Commit helpers ────────────────────────────────────────────────────
@@ -1014,12 +1182,12 @@ class MiniKeyboardView(context: Context) : View(context) {
         val listener = onKeyActionListener ?: return
         when (key.keyType) {
             KeyType.CHARACTER -> {
-                val ch = if (shiftActive) {
+                val ch = if (shiftActive || capsLockActive) {
                     key.primary[0].uppercaseChar()
                 } else {
                     key.primary[0].lowercaseChar()
                 }
-                // Auto-release shift after one character
+                // Auto-release the one-character latch; caps lock persists.
                 if (shiftActive) shiftActive = false
 
                 if (currentLayer == KeyboardLayer.NUMERIC) {
@@ -1031,7 +1199,14 @@ class MiniKeyboardView(context: Context) : View(context) {
             }
             KeyType.BACKSPACE -> listener.onBackspace()
             KeyType.SHIFT     -> {
-                shiftActive = !shiftActive
+                // Single tap: toggle the one-character latch; while caps lock
+                // is on, a single tap exits it. Double-tap locks caps on/off
+                // (see handleQuickTap).
+                if (capsLockActive) {
+                    capsLockActive = false
+                } else {
+                    shiftActive = !shiftActive
+                }
                 listener.onShift()
             }
             KeyType.NUMERIC   -> setLayer(KeyboardLayer.NUMERIC)
@@ -1044,10 +1219,14 @@ class MiniKeyboardView(context: Context) : View(context) {
         }
     }
 
-    private fun commitSecondary(key: KeyDef, replace: Boolean) {
+    private fun commitSecondary(key: KeyDef, replace: Boolean, shifted: Boolean) {
         val listener = onKeyActionListener ?: return
         if (key.secondary != null) {
-            val ch = if (shiftActive) {
+            // Secondaries follow the shift/caps state like the primary. The
+            // double-tap path passes the shift captured at the first tap —
+            // the primary commit consumed the latch before the second tap
+            // landed. Either way the latch is released here.
+            val ch = if (shifted || capsLockActive) {
                 key.secondary[0].uppercaseChar()
             } else {
                 key.secondary[0].lowercaseChar()
@@ -1094,6 +1273,18 @@ class MiniKeyboardView(context: Context) : View(context) {
          *  navigation bar so the strip below the keyboard matches. */
         fun backgroundColor(dark: Boolean): Int =
             if (dark) DARK_BG_COLOR else LIGHT_BG_COLOR
+
+        /** Hit-target radius factor: half the key's bounding-box diagonal times
+         *  this fills the gaps between adjacent keys, so taps never fall dead.
+         *  >1 also absorbs the sweet-spot offsets defined below. */
+        private const val HIT_RADIUS_FACTOR = 1.08f
+        /** Sweet-spot vertical position as a fraction of key height. 0.5 =
+         *  exact center; <0.5 shifts the target UP, because a thumb's contact
+         *  pad usually lands below the key it aims at. */
+        private const val SWEET_SPOT_HEIGHT_FRACTION = 0.38f
+        /** Inward nudge for the leftmost/rightmost key of a row, as a fraction
+         *  of key width — thumbs reach edge keys from the screen center. */
+        private const val SWEET_SPOT_EDGE_PULL = 0.08f
 
         private const val LONG_PRESS_MS = 350L
         private const val BACKSPACE_INITIAL_DELAY_MS = 400L

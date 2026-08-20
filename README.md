@@ -13,6 +13,7 @@ A compact 3-row QWERTY Android keyboard (IME) with a built-in Vietnamese **Telex
 - **Compact 3-row QWERTY** — the 9 rarest letters are quick double-tap secondaries on their QWERTY home keys; tone keys `X S F R J` sit where Telex typists expect them.
 - **Numeric/symbol layer** with symbol double-tap secondaries.
 - **Light/dark/system theme**, haptics toggle, adjustable keyboard height (drag handle), adjustable double-tap window.
+- **Tap accuracy** — nearest-key hit targets with thumb-offset correction, press feedback on key-down, and multi-touch handling so fast typing never drops a key.
 - **No special permissions** — nothing to grant, nothing to leak.
 
 ## Install
@@ -60,7 +61,7 @@ Typing quirks it can't fix (same as ibus-bamboo's auto-restore): `door`, `bus`, 
 - **Row 3:** shift, `123`, space, return.
 - **Numeric layer:** digits, `@ ! % : ) - ? = / ]` with double-tap secondaries `~ # $ & ( _ + ; ' [`; plus `.` and `📋` (clipboard).
 
-Quick double-tap on a key replaces the last character with the key's secondary. Long-press (350 ms) or swipe-down commits the secondary. Backspace repeats while held.
+Quick double-tap on a key replaces the last character with the key's secondary. Long-press (350 ms) or a deliberate swipe-down commits the secondary. Double-tap Shift for caps lock (⇪). Backspace repeats while held. Fast typing is safe: overlapping taps (the next finger landing before the previous lifts) still register both keys, and a thumb roll on a tap won't fire a swipe or a double-tap.
 
 ## Settings
 
