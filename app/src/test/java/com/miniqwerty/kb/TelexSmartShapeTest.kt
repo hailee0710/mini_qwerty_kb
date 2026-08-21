@@ -49,6 +49,15 @@ class TelexSmartShapeTest {
         assertEquals("đc", TelexProcessor.resolve("ddc", smart = true, dict = setOf("đc")))
     }
 
+    @Test fun `đ combines with any following letter`() {
+        // Texting contractions: "ddg" → đg, "ddm" → đm, "ddt" → đt. The shape
+        // validator lets "đ" pair with anything after it, not just a valid coda.
+        assertEquals("đg", TelexProcessor.resolve("ddg", smart = true))
+        assertEquals("đm", TelexProcessor.resolve("ddm", smart = true))
+        assertEquals("đt", TelexProcessor.resolve("ddt", smart = true))
+        assertEquals("đk", TelexProcessor.resolve("ddk", smart = true))
+    }
+
     // ── Dictionary fallback ──────────────────────────────────────────────
 
     @Test fun `resolved word missing from the dict falls back to raw`() {
