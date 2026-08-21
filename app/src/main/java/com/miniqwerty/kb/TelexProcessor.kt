@@ -548,13 +548,17 @@ object TelexProcessor {
             if (i >= s.length) return true
             val onsetEnds = listOf(i) + ONSETS.filter { s.startsWith(it, i) }.map { i + it.length }
             for (oe in onsetEnds) {
-                // A lone onset at the very start can be the whole word —
-                // Vietnamese has a standalone consonant word, "đ" (yes).
-                // Without this, smart mode rejects `dd` → đ and falls back to
-                // the raw letters. Guarded to i == 0 so a trailing consonant
-                // after a complete syllable ("good" → god) stays a coda, not
-                // a second onset-only syllable.
-                if (i == 0 && oe == s.length) return true
+                // A lone onset at the very start can be the whole word — or an
+                // onset with a trailing coda but no nucleus, like the texting
+                // contraction "đc" (được) and "đ" (yes) itself. Without this,
+                // smart mode rejects `ddc` → đc and falls back to the raw
+                // letters. Guarded to i == 0 so a trailing consonant after a
+                // complete syllable ("good" → god) stays a coda, not a second
+                // onset-only syllable.
+                if (i == 0) {
+                    val codas = listOf(oe) + CODAS.filter { s.startsWith(it, oe) }.map { oe + it.length }
+                    for (ce in codas) if (ce == s.length) return true
+                }
                 for (nuc in NUCLEI) {
                     if (!s.startsWith(nuc, oe)) continue
                     val ni = oe + nuc.length

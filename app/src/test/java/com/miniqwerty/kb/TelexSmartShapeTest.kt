@@ -41,6 +41,14 @@ class TelexSmartShapeTest {
         assertEquals("đ", TelexProcessor.resolve("dd", smart = true, dict = setOf("đ")))
     }
 
+    @Test fun `onset plus coda without a vowel passes shape and dict`() {
+        // "ddc" → "đc" — the texting contraction of "được". Like "đ" it has
+        // no nucleus; an onset with a trailing coda must pass shape or smart
+        // mode falls back to the raw "ddc".
+        assertEquals("đc", TelexProcessor.resolve("ddc", smart = true))
+        assertEquals("đc", TelexProcessor.resolve("ddc", smart = true, dict = setOf("đc")))
+    }
+
     // ── Dictionary fallback ──────────────────────────────────────────────
 
     @Test fun `resolved word missing from the dict falls back to raw`() {
