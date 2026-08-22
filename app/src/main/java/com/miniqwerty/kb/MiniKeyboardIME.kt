@@ -256,8 +256,17 @@ class MiniKeyboardIME : InputMethodService(), OnKeyActionListener {
                 updateComposingText()
             }
         } else {
-            // No composing text — delegate to the target app
-            ic.deleteSurroundingText(1, 0)
+            // No composing text — delegate to the target app. An active text
+            // selection must be deleted whole: deleteSurroundingText(1, 0)
+            // only removes characters before the selection start, which just
+            // collapses the selection to its end. commitText replaces the
+            // selection with the given text, so an empty string deletes it.
+            val selected = ic.getSelectedText(0)
+            if (!selected.isNullOrEmpty()) {
+                ic.commitText("", 0)
+            } else {
+                ic.deleteSurroundingText(1, 0)
+            }
         }
     }
 
